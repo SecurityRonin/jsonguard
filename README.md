@@ -30,12 +30,13 @@ Every sanitizer in `jsonguard` accepts `&str` **or** `&[u8]`. Byte input is deco
 use jsonguard::{csv_field, tsv_safe, jsonl_safe};
 
 // Both compile. Both are safe. The &[u8] path decodes first.
-let safe = csv_field("O'Brien, \"quoted\"");
-let safe = csv_field(b"\xB3\x5C raw bytes from Big5 source");
-//                    ^^ 許 in Big5; 0x5C second byte is handled correctly
+let from_str   = csv_field("O'Brien, \"quoted\"");
+let from_bytes = csv_field(b"\xB3\x5C raw bytes from Big5 source");
+//                          ^^ 許 in Big5; 0x5C second byte is handled correctly
 
-assert!(!safe.lossy);   // true only when bytes couldn't decode
-println!("{}", safe);   // always a valid CSV field
+assert!(!from_str.lossy);   // &str input: always valid UTF-8
+assert!(from_bytes.lossy);  // byte input: \xB3 was undecodable, replaced
+println!("{}", from_bytes); // still a valid, safe CSV field
 ```
 
 ## Features
@@ -49,14 +50,14 @@ println!("{}", safe);   // always a valid CSV field
 
 ```toml
 [dependencies]
-jsonguard = "0.1"
+jsonguard = "0.2"
 ```
 
 No-std compatible:
 
 ```toml
 [dependencies]
-jsonguard = { version = "0.1", default-features = false, features = ["alloc"] }
+jsonguard = { version = "0.2", default-features = false, features = ["alloc"] }
 ```
 
 ## Usage
@@ -130,6 +131,38 @@ pub struct Guarded {
 ```
 
 `Guarded` implements `Display` (emits `value`) so it drops straight into format strings. Check `lossy` when you care about data fidelity — e.g., log a warning or reject the record.
+
+### Input inspection
+
+`inspect()` passively scans input and returns a `Findings` report without modifying anything.
+
+```rust
+use jsonguard::inspect;
+
+// Reject at an API boundary
+let f = inspect(user_input);
+if !f.is_csv_safe() {
+    return Err("input contains characters unsafe for CSV");
+}
+
+// Audit log with per-violation detail
+let f = inspect(raw_bytes);
+for v in &f.violations {
+    eprintln!("violation {:?} at byte {}", v.kind, v.byte_offset);
+}
+
+// Branch: sanitize or reject
+let f = inspect(user_input);
+if f.is_clean() {
+    Ok(csv_field(user_input))       // no changes needed
+} else if f.is_csv_safe() {
+    Ok(csv_field(user_input))       // sanitizer handles it
+} else {
+    Err("rejected: unsafe characters for CSV")
+}
+```
+
+`Findings` exposes format-specific safety queries (`is_csv_safe`, `is_tsv_safe`, `is_jsonl_safe`, `is_display_safe`) and generic violation queries (`has_formula`, `has_bidi`, `has_controls`, `has_invalid_utf8`). Each `Violation` carries the `byte_offset` and the offending `char`.
 
 ## Attack Coverage
 

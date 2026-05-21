@@ -6,7 +6,7 @@ Correctness analysis of jsonguard against authoritative external attack corpora.
 
 | Component | Version | Source |
 |-----------|---------|--------|
-| jsonguard | 0.1.0 (167 tests) | [crates.io](https://crates.io/crates/jsonguard) |
+| jsonguard | 0.2.0 (167 tests) | [crates.io](https://crates.io/crates/jsonguard) |
 | Rust (rustc) | 1.75+ (MSRV) | [rustup.rs](https://rustup.rs/) |
 | Platform | macOS Darwin 24.6.0, arm64 | — |
 
@@ -35,7 +35,7 @@ Integration tests are in [`tests/real_world_samples.rs`](../tests/real_world_sam
 
 `BidiCharacterTest.txt` is the Unicode Consortium's official conformance test for the Unicode Bidirectional Algorithm (UBA, [Unicode TR#9](https://unicode.org/reports/tr9/)). Each data line specifies a codepoint sequence, paragraph direction, resolved embedding levels, and expected reorder indices. We extract lines whose codepoint sequence contains U+202E (RIGHT-TO-LEFT OVERRIDE) and reconstruct the strings from the hex fields.
 
-### What is tested (7 tests)
+### What is tested (8 tests)
 
 | Test | Assertion |
 |------|-----------|
@@ -43,7 +43,7 @@ Integration tests are in [`tests/real_world_samples.rs`](../tests/real_world_sam
 | `inspect_detects_bidi_in_rlo_corpus_lines` | First 50 UCD lines containing U+202E: `inspect().has_bidi() == true`, `is_csv_safe() == false`, `is_display_safe() == false` |
 | `display_safe_strips_rlo_from_corpus_lines` | First 20 UCD RLO lines: U+202E absent from `display_safe()` output |
 | `csv_field_sanitizes_rlo_from_corpus_lines` | First 20 UCD RLO lines: U+202E absent from `csv_field()` output |
-| `jsonl_safe_encodes_rlo_as_unicode_escape` | First 10 UCD RLO lines: no raw U+202E; `‮` present as JSON escape |
+| `jsonl_safe_encodes_rlo_as_unicode_escape` | First 10 UCD RLO lines: no raw U+202E; `\u202e` present as JSON escape |
 | `bidi_samples_file_loads` | Handcrafted file is ≥ 50 bytes (corpus integrity sanity check) |
 | `inspect_detects_bidi_in_all_attack_samples` | Every line in `bidi_samples.txt` containing a bidi codepoint is flagged by `inspect()` |
 | `display_safe_strips_bidi_from_attack_samples` | Every line in `bidi_samples.txt`: none of the 10 known bidi codepoints appear in `display_safe()` output |
@@ -100,7 +100,7 @@ DDE (Dynamic Data Exchange) attacks that do not start with `= + - @` are **not**
 
 Kuhn's stress test is the canonical external reference for UTF-8 decoder robustness. It contains deliberately invalid sequences across every known category of UTF-8 malformation. `std::str::from_utf8` rejects the file (verified statically by the compiler), confirming the corpus is genuinely invalid.
 
-### What is tested (4 tests)
+### What is tested (5 tests)
 
 | Test | Assertion |
 |------|-----------|
@@ -128,7 +128,7 @@ Handcrafted inline byte sequences, each drawn from Kuhn's taxonomy or documented
 | `\xFF\xFE` | UTF-16 BOM bytes — invalid UTF-8 | [UTF-8 definition](https://www.rfc-editor.org/rfc/rfc3629) |
 | `\x80` | Isolated continuation byte without lead byte | Kuhn §4.1 |
 
-### What is tested (14 tests)
+### What is tested (12 tests)
 
 | Test | Assertion |
 |------|-----------|
