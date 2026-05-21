@@ -51,9 +51,33 @@ pub struct Findings {
     pub lossy:      bool,
 }
 
+#[cfg(feature = "alloc")]
+impl Findings {
+    pub fn is_clean(&self) -> bool {
+        self.violations.is_empty()
+    }
+
+    pub fn has_formula(&self) -> bool {
+        self.violations.iter().any(|v| matches!(v.kind, ViolationKind::FormulaInjection))
+    }
+
+    pub fn has_bidi(&self) -> bool {
+        self.violations.iter().any(|v| matches!(v.kind, ViolationKind::BidiOverride))
+    }
+
+    pub fn has_controls(&self) -> bool {
+        self.violations.iter().any(|v| matches!(v.kind, ViolationKind::ControlChar))
+    }
+
+    pub fn has_invalid_utf8(&self) -> bool {
+        self.violations.iter().any(|v| matches!(v.kind, ViolationKind::InvalidUtf8))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::prelude::v1::*;
+    use std::vec;
     use super::*;
 
     #[test]
