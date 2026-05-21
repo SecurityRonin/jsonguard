@@ -49,4 +49,47 @@ mod tests {
         let d = DecodedStr { text: "world".to_string(), lossy: false };
         assert_eq!(d.to_string(), "world");
     }
+
+    // ViolationKind, Violation, Findings — compile-time structure tests
+    #[test]
+    fn violation_kind_variants_exist() {
+        let _ = ViolationKind::FormulaInjection;
+        let _ = ViolationKind::BidiOverride;
+        let _ = ViolationKind::ControlChar;
+        let _ = ViolationKind::InvalidUtf8;
+    }
+
+    #[test]
+    fn violation_fields_accessible() {
+        let v = Violation {
+            kind: ViolationKind::ControlChar,
+            byte_offset: 3,
+            char: Some('\x01'),
+        };
+        assert_eq!(v.byte_offset, 3);
+        assert_eq!(v.char, Some('\x01'));
+    }
+
+    #[test]
+    fn violation_char_none_for_invalid_utf8() {
+        let v = Violation {
+            kind: ViolationKind::InvalidUtf8,
+            byte_offset: 0,
+            char: None,
+        };
+        assert!(v.char.is_none());
+    }
+
+    #[test]
+    fn findings_fields_accessible() {
+        let f = Findings { violations: Vec::new(), lossy: false };
+        assert!(f.violations.is_empty());
+        assert!(!f.lossy);
+    }
+
+    #[test]
+    fn findings_lossy_flag() {
+        let f = Findings { violations: Vec::new(), lossy: true };
+        assert!(f.lossy);
+    }
 }
