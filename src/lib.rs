@@ -9,3 +9,7 @@ extern crate std;
 
 mod guard_input;
 mod types;
+
+pub use guard_input::GuardInput;
+#[cfg(feature = "alloc")]
+pub use types::{DecodedStr, Guarded};
