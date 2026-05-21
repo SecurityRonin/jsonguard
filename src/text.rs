@@ -1,6 +1,8 @@
 #[cfg(feature = "alloc")]
 use alloc::string::String;
+#[cfg(feature = "alloc")]
 use crate::guard_input::GuardInput;
+#[cfg(feature = "alloc")]
 use crate::types::{DecodedStr, Guarded};
 
 #[cfg(feature = "alloc")]
@@ -45,7 +47,7 @@ pub fn cap_display<I: GuardInput>(input: I, max_chars: usize) -> Guarded {
     let safe: String = text.chars().filter(|&c| !is_display_unsafe(c)).collect();
     let value = if safe.chars().count() > max_chars {
         let truncated: String = safe.chars().take(max_chars).collect();
-        alloc::format!("{}\u{2026}", truncated)
+        alloc::format!("{truncated}\u{2026}")
     } else {
         safe
     };
@@ -61,7 +63,7 @@ pub fn tsv_safe<I: GuardInput>(input: I) -> Guarded {
         c => Some(c),
     }).collect();
     let value = match cleaned.chars().next() {
-        Some('=' | '+' | '-' | '@') => alloc::format!("'{}", cleaned),
+        Some('=' | '+' | '-' | '@') => alloc::format!("'{cleaned}"),
         _ => cleaned,
     };
     Guarded { value, lossy }
@@ -80,12 +82,12 @@ pub fn csv_field<I: GuardInput>(input: I) -> Guarded {
         !is_display_unsafe(c)
     }).collect();
     let guarded = match cleaned.chars().next() {
-        Some('=' | '+' | '-' | '@') => alloc::format!("'{}", cleaned),
+        Some('=' | '+' | '-' | '@') => alloc::format!("'{cleaned}"),
         _ => cleaned,
     };
     let value = if needs_csv_quoting(&guarded) {
         let escaped = guarded.replace('"', "\"\"");
-        alloc::format!("\"{}\"", escaped)
+        alloc::format!("\"{escaped}\"")
     } else {
         guarded
     };
@@ -320,6 +322,13 @@ mod tests {
     }
 
     #[test]
+    fn tsv_safe_bytes_invalid_utf8_lossy_with_formula_guard() {
+        let g = tsv_safe(b"=\xFF".as_ref());
+        assert!(g.to_string().starts_with("'="));
+        assert!(g.lossy);
+    }
+
+    #[test]
     fn tsv_safe_unicode_preserved() {
         let g = tsv_safe("許功蓋");
         assert_eq!(g.to_string(), "許功蓋");
@@ -427,6 +436,12 @@ mod tests {
         assert_eq!(g.to_string(), "");
     }
 
+    #[test]
+    fn csv_field_bytes_invalid_utf8_lossy() {
+        let g = csv_field(b"\xFF\xFE hello".as_ref());
+        assert!(g.lossy);
+    }
+
     // jsonl_safe
     #[test]
     fn jsonl_safe_wraps_in_quotes() {
@@ -495,6 +510,28 @@ mod tests {
         let g = jsonl_safe("許功蓋");
         assert_eq!(g.to_string(), r#""許功蓋""#);
         assert!(!g.lossy);
+    }
+
+    #[test]
+    fn jsonl_safe_bytes_big5_becomes_replacement_chars() {
+        // Big5 bytes decoded lossy BEFORE JSON escaping.
+        // 0x5C byte must NOT survive as a raw backslash.
+        let g = jsonl_safe(b"\xB3\x5C".as_ref());
+        assert!(g.lossy);
+        let s = g.to_string();
+        assert!(s.starts_with('"') && s.ends_with('"'),
+            "output must be a valid JSON string literal");
+        let inner = &s[1..s.len()-1];
+        let mut chars = inner.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                let next = chars.next().expect("backslash must be followed by escape char");
+                assert!(
+                    matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u'),
+                    "invalid escape sequence \\{next}"
+                );
+            }
+        }
     }
 
     #[test]

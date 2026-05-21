@@ -11,6 +11,7 @@ mod guard_input;
 mod types;
 mod text;
 
+#[cfg(feature = "alloc")]
 pub use guard_input::GuardInput;
 #[cfg(feature = "alloc")]
 pub use types::{DecodedStr, Guarded};

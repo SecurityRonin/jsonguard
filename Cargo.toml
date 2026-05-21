@@ -3,12 +3,13 @@ name = "jsonguard"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
+authors = ["Security Ronin Ltd"]
 license = "Apache-2.0"
-description = "Secure output sanitization for JSON/JSONL, CSV, TSV, MongoDB, Elasticsearch, Redis, BSON, and MessagePack — guards against injection, formula, bidi-override, and control-character attacks."
+description = "Secure output sanitization for JSON/JSONL, CSV, and TSV — guards against injection, formula, bidi-override, and control-character attacks."
 repository = "https://github.com/SecurityRonin/jsonguard"
 homepage = "https://github.com/SecurityRonin/jsonguard"
 documentation = "https://docs.rs/jsonguard"
-keywords = ["json", "csv", "sanitize", "injection", "nosql"]
+keywords = ["json", "csv", "sanitize", "injection", "formula-injection"]
 categories = ["encoding", "text-processing", "parser-implementations"]
 readme = "README.md"
 

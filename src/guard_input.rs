@@ -4,12 +4,13 @@ use alloc::string::String;
 mod private {
     pub trait Sealed {}
     impl Sealed for &str {}
-    impl<'a> Sealed for &'a [u8] {}
-    impl<'a, const N: usize> Sealed for &'a [u8; N] {}
+    impl Sealed for &[u8] {}
+    impl<const N: usize> Sealed for &[u8; N] {}
     #[cfg(feature = "alloc")]
-    impl<'a> Sealed for &'a alloc::string::String {}
+    impl Sealed for &alloc::string::String {}
 }
 
+#[cfg(feature = "alloc")]
 pub trait GuardInput: private::Sealed {
     fn as_utf8_lossy(&self) -> (String, bool);
 }
