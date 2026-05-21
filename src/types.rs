@@ -116,4 +116,64 @@ mod tests {
         let f = Findings { violations: Vec::new(), lossy: true };
         assert!(f.lossy);
     }
+
+    // Helper used across Tasks 2 and 3
+    fn v(kind: ViolationKind, byte_offset: usize, ch: Option<char>) -> Violation {
+        Violation { kind, byte_offset, char: ch }
+    }
+
+    fn findings(vs: Vec<Violation>) -> Findings {
+        Findings { violations: vs, lossy: false }
+    }
+
+    // Generic method tests
+    #[test]
+    fn is_clean_empty() {
+        assert!(findings(vec![]).is_clean());
+    }
+
+    #[test]
+    fn is_clean_false_when_violation_present() {
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 0, Some('\0'))]).is_clean());
+    }
+
+    #[test]
+    fn has_formula_true() {
+        assert!(findings(vec![v(ViolationKind::FormulaInjection, 0, Some('='))]).has_formula());
+    }
+
+    #[test]
+    fn has_formula_false() {
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 0, Some('\0'))]).has_formula());
+    }
+
+    #[test]
+    fn has_bidi_true() {
+        assert!(findings(vec![v(ViolationKind::BidiOverride, 5, Some('\u{202E}'))]).has_bidi());
+    }
+
+    #[test]
+    fn has_bidi_false() {
+        assert!(!findings(vec![]).has_bidi());
+    }
+
+    #[test]
+    fn has_controls_true() {
+        assert!(findings(vec![v(ViolationKind::ControlChar, 0, Some('\x01'))]).has_controls());
+    }
+
+    #[test]
+    fn has_controls_false() {
+        assert!(!findings(vec![v(ViolationKind::FormulaInjection, 0, Some('='))]).has_controls());
+    }
+
+    #[test]
+    fn has_invalid_utf8_true() {
+        assert!(findings(vec![v(ViolationKind::InvalidUtf8, 0, None)]).has_invalid_utf8());
+    }
+
+    #[test]
+    fn has_invalid_utf8_false() {
+        assert!(!findings(vec![]).has_invalid_utf8());
+    }
 }
