@@ -1,1109 +1,300 @@
 # jsonguard v0.1 Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **For Claude:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task.
 
-**Goal:** Build `jsonguard` — a zero-dependency, `no_std`-compatible Rust library that sanitizes strings for safe emission into JSON/JSONL, CSV, TSV, terminal tables, MongoDB, Elasticsearch, Redis, BSON, and MessagePack, guarding against injection, formula, bidi-override, control-character, and NoSQL operator attacks.
+**Goal:** Implement `jsonguard` — a Rust library for secure output sanitization of JSON/JSONL, CSV, and TSV — covering formula injection, bidi-override, control-character, and CJKV encoding attacks with a secure-by-default API.
 
-**Architecture:** Four module groups — `text` (TSV/CSV/JSONL/display), `nosql` (MongoDB/Elasticsearch/Redis), `binary` (BSON/MessagePack/Protocol Buffers advisory), and `decode` (raw-bytes → `DecodedStr{text, lossy}`) — all gated behind Cargo features. Every sanitizer returns `Cow<'_, str>`: borrowed when input is already clean (the common case, zero allocation), owned only when changes are needed. Core module is `no_std + alloc`; `nosql` and `binary` require the `nosql` and `binary` features respectively.
+**Architecture:** A sealed `GuardInput` trait accepts both `&str` and `&[u8]`, making UTF-8 decode mandatory and invisible. All sanitizers return `Guarded { value: String, lossy: bool }`. Six public functions: `bytes_to_utf8_lossy_safe`, `display_safe`, `cap_display`, `tsv_safe`, `csv_field`, `jsonl_safe`.
 
-**Tech Stack:** Rust 1.75, no mandatory runtime dependencies, `proptest` for property-based tests in dev, `alloc` feature guards for `Cow`/`String` APIs.
-
-**Engineering Decisions:**
-- TSV tab→space (not deletion) matches Volatility3 convention; documented in module-level doc comment.
-- Formula injection prefix (`'`) follows OWASP CSV Injection guidance — defangs `= + - @` openers.
-- Bidi override removal is done at-sanitize-time (not decode-time) in this library; callers who want decode-time stripping should chain with `decode::bytes_to_utf8_lossy_safe`.
-- MongoDB key sanitization strips `$` prefix and `.` from keys only — values are not touched (MongoDB stores arbitrary string values safely; injection is a key-name issue).
-- Protocol Buffers advisory module contains only documentation (no code) — PB is injection-proof at wire level.
-- `no_std + alloc` for all modules: no `std::io::Write`, no `std::error::Error` (unless `std` feature enabled).
+**Tech Stack:** Rust 1.75, `no_std` + `alloc` feature (default enabled), `proptest` for property tests, `cargo test` for unit tests.
 
 ---
 
-## Repo layout (end state)
+## Before You Start
 
+### Repository state
+
+The repo at `~/src/jsonguard` already has:
+- `Cargo.toml` — `name = "jsonguard"`, `default = ["alloc"]`, `dev-dependencies = { proptest = "1" }`
+- `src/lib.rs` — cargo template boilerplate (rewrite it)
+- `src/binary/`, `src/nosql/`, `src/text/` — empty directories (remove them)
+- `LICENSE`, `README.md` — already written, do not touch
+
+Remove the empty directories:
+```bash
+rmdir src/binary src/nosql src/text
 ```
-jsonguard/
-├── Cargo.toml
-├── src/
-│   ├── lib.rs               # #![no_std], feature gates, pub re-exports
-│   ├── decode.rs            # DecodedStr, bytes_to_utf8_lossy_safe
-│   ├── text/
-│   │   ├── mod.rs           # shared needs_fix kernel
-│   │   ├── tsv.rs           # tsv_safe()
-│   │   ├── csv.rs           # csv_field()
-│   │   ├── json.rs          # jsonl_safe()
-│   │   └── display.rs       # display_safe(), cap_display()
-│   ├── nosql/
-│   │   ├── mod.rs
-│   │   ├── mongo.rs         # sanitize_mongo_key(), has_mongo_operator()
-│   │   ├── elastic.rs       # sanitize_es_query(), sanitize_es_field()
-│   │   └── redis.rs         # sanitize_redis_arg()
-│   └── binary/
-│       ├── mod.rs
-│       ├── bson.rs          # sanitize_bson_key() (shares $ logic with mongo)
-│       ├── msgpack.rs       # advisory: schema recommendations
-│       └── protobuf.rs      # advisory: injection-proof at wire level (doc only)
-└── docs/plans/
-    └── 2026-05-21-jsonguard-v0.1.md   (this file)
+
+### TDD mandate (non-negotiable)
+
+Per project CLAUDE.md:
+- **Two commits per task**: one RED (failing tests only), one GREEN (implementation that passes).
+- Run tests after the RED commit to confirm they fail. Run again after GREEN to confirm they pass.
+- If a test passes immediately after writing it (before implementation), the test is wrong — fix it.
+
+### Git signing
+
+Commits use gitsign. If the credential cache is not running, start it before making any commits:
+```bash
+gitsign credential-cache start
+export GITSIGN_CREDENTIAL_CACHE="$HOME/Library/Caches/sigstore/gitsign/cache.sock"
 ```
 
 ---
 
-## Shared character classification kernel
+## Why This Design (Read Before Implementing)
 
-Every module uses the same `needs_fix` predicate family. Keep them in `src/text/mod.rs` as `pub(crate)` functions so each module imports rather than re-declares them.
+### Secure by default — the core axiom
+
+Every sanitizer accepts `GuardInput`, not `&str`. This means callers can pass `&[u8]` directly and the UTF-8 decode happens automatically inside the sanitizer. There is no "call decode() first" doc comment footgun.
+
+**The CJKV 0x5C problem:** Big5-encoded text can have bytes like `許` = `0xB3 0x5C`. The second byte `0x5C` is ASCII `\`. If you pass raw Big5 bytes to a JSON string escaper that operates on bytes, `0x5C` triggers JSON escape processing and corrupts the output. The fix is to decode to UTF-8 first — then `許` becomes the Unicode codepoint U+8A31, which has no `\` in its UTF-8 encoding. `GuardInput` enforces this decode-first invariant structurally: the byte path calls `String::from_utf8_lossy` before any sanitizer sees the bytes.
+
+Same issue exists for GBK, EUC-KR, and other DBCS encodings. After UTF-8 decode, none of these encoding collisions exist.
+
+### The sealed trait
+
+`GuardInput` is a sealed trait (cannot be implemented externally). This is intentional — we can only guarantee the decode invariant holds for `&str` (already UTF-8) and `&[u8]` (UTF-8 lossy decode). If third-party code could implement `GuardInput` for their own type, they could bypass the decode step.
+
+Sealed trait pattern in Rust:
+```rust
+mod private {
+    pub trait Sealed {}
+}
+pub trait GuardInput: private::Sealed { ... }
+// impls are in this crate only
+impl private::Sealed for &str {}
+impl private::Sealed for &[u8] {}
+```
+
+### `lossy: bool` on the return type
+
+When `&[u8]` input contains invalid UTF-8, `String::from_utf8_lossy` inserts U+FFFD replacement characters. The `lossy` flag signals this happened. Callers who need to log a warning, reject the record, or audit the input have the information they need. Callers who don't care just use `{}` formatting.
+
+`lossy` propagates through all sanitizers: if the decode was lossy, the sanitizer's `Guarded` has `lossy = true` even if the sanitizer itself didn't change any characters.
+
+---
+
+## Module layout
+
+After removing the empty dirs, the final layout is:
+
+```
+src/
+  lib.rs           <- crate root, re-exports public API
+  guard_input.rs   <- GuardInput sealed trait + impls for &str and &[u8]
+  types.rs         <- Guarded and DecodedStr structs
+  text.rs          <- all sanitizer functions
+```
+
+---
+
+## Task 1: Core types — `GuardInput`, `Guarded`, `DecodedStr`
+
+**Files:**
+- Create: `src/guard_input.rs`
+- Create: `src/types.rs`
+- Modify: `src/lib.rs`
+
+### Step 1: Write the failing tests (RED)
+
+Create `src/guard_input.rs` with tests only — no implementation:
 
 ```rust
-/// Returns true for chars that are row/field boundary threats in TSV/JSONL
-/// and also C0/C1 controls + bidi overrides.
-pub(crate) fn is_control_or_boundary(c: char) -> bool {
-    matches!(c,
-        '\u{0000}'..='\u{001F}'   // C0 controls (includes \t \n \r NUL)
-        | '\u{007F}'              // DEL
-        | '\u{0080}'..='\u{009F}' // C1 controls
-        | '\u{202A}'..='\u{202E}' // bidi embedding / override
-        | '\u{2066}'..='\u{2069}' // bidi isolate
-        | '\u{200E}' | '\u{200F}' // LRM / RLM
-    )
-}
+// tests only, no impl yet
+#[cfg(test)]
+mod tests {
+    // These tests will fail to compile until the trait and impls exist.
+    // That IS the expected RED failure.
+    use super::*;
 
-/// Returns true for chars that are invisible zero-width markers
-/// (not controls, but deceptive in display contexts).
-pub(crate) fn is_zero_width_invisible(c: char) -> bool {
-    matches!(c,
-        '\u{200B}'  // ZWSP
-        | '\u{200C}' | '\u{200D}' // ZWNJ / ZWJ
-        | '\u{FEFF}' // BOM / ZWNBSP
-        | '\u{2060}' // word joiner
-    )
+    #[test]
+    fn str_input_not_lossy() {
+        let (text, lossy) = "hello".as_utf8_lossy();
+        assert_eq!(text, "hello");
+        assert!(!lossy);
+    }
+
+    #[test]
+    fn bytes_valid_utf8_not_lossy() {
+        let (text, lossy) = b"hello".as_utf8_lossy();
+        assert_eq!(text, "hello");
+        assert!(!lossy);
+    }
+
+    #[test]
+    fn bytes_invalid_utf8_is_lossy() {
+        let (text, lossy) = b"\xFF\xFE".as_utf8_lossy();
+        assert!(text.contains('\u{FFFD}'));
+        assert!(lossy);
+    }
+
+    #[test]
+    fn bytes_big5_0x5c_second_byte() {
+        // 許 in Big5 = 0xB3 0x5C. The 0x5C byte is backslash in ASCII.
+        // After UTF-8 lossy decode, it becomes replacement chars (Big5 is not valid UTF-8).
+        // The point: 0x5C does NOT survive as a raw backslash byte.
+        let (text, lossy) = b"\xB3\x5C".as_utf8_lossy();
+        assert!(lossy); // Big5 bytes are not valid UTF-8
+        // No raw 0x5C byte remains as '\' in the decoded string
+        assert!(!text.contains('\\'));
+    }
 }
 ```
 
----
-
-## Task 1: Crate skeleton + `lib.rs` + `text/mod.rs` kernel
-
-### Files
-- Create: `src/lib.rs`
-- Create: `src/text/mod.rs`
-
-### Step 1: Write RED tests (lib-level smoke + kernel)
-
-Create `src/lib.rs` with the test module only, referencing not-yet-existing items:
+Create `src/types.rs` with tests only:
 
 ```rust
-// src/lib.rs
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guarded_display_emits_value() {
+        let g = Guarded { value: "hello".to_string(), lossy: false };
+        assert_eq!(g.to_string(), "hello");
+    }
+
+    #[test]
+    fn guarded_lossy_flag_accessible() {
+        let g = Guarded { value: "x".to_string(), lossy: true };
+        assert!(g.lossy);
+    }
+
+    #[test]
+    fn decoded_str_display_emits_text() {
+        let d = DecodedStr { text: "world".to_string(), lossy: false };
+        assert_eq!(d.to_string(), "world");
+    }
+}
+```
+
+Modify `src/lib.rs` to declare the modules (compilation will fail — that's RED):
+
+```rust
 #![cfg_attr(not(feature = "std"), no_std)]
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod text;
-// nosql and binary added in later tasks
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn crate_compiles() {}
-}
+mod guard_input;
+mod types;
 ```
 
-Create `src/text/mod.rs` with tests that reference `is_control_or_boundary` and `is_zero_width_invisible` before they exist:
-
-```rust
-// src/text/mod.rs
-pub mod tsv;
-pub mod csv;
-pub mod json;
-pub mod display;
-
-pub(crate) fn is_control_or_boundary(_c: char) -> bool { todo!() }
-pub(crate) fn is_zero_width_invisible(_c: char) -> bool { todo!() }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tab_is_control_or_boundary() {
-        assert!(is_control_or_boundary('\t'));
-    }
-    #[test]
-    fn newline_is_control_or_boundary() {
-        assert!(is_control_or_boundary('\n'));
-    }
-    #[test]
-    fn nul_is_control_or_boundary() {
-        assert!(is_control_or_boundary('\u{0000}'));
-    }
-    #[test]
-    fn del_is_control_or_boundary() {
-        assert!(is_control_or_boundary('\u{007F}'));
-    }
-    #[test]
-    fn c1_control_is_boundary() {
-        assert!(is_control_or_boundary('\u{0085}')); // NEL
-    }
-    #[test]
-    fn rtl_override_is_boundary() {
-        assert!(is_control_or_boundary('\u{202E}'));
-    }
-    #[test]
-    fn lrm_is_boundary() {
-        assert!(is_control_or_boundary('\u{200E}'));
-    }
-    #[test]
-    fn regular_ascii_not_boundary() {
-        assert!(!is_control_or_boundary('A'));
-        assert!(!is_control_or_boundary(' '));
-        assert!(!is_control_or_boundary('-'));
-    }
-    #[test]
-    fn unicode_letter_not_boundary() {
-        assert!(!is_control_or_boundary('ñ'));
-        assert!(!is_control_or_boundary('中'));
-    }
-    #[test]
-    fn zwsp_is_zero_width_invisible() {
-        assert!(is_zero_width_invisible('\u{200B}'));
-    }
-    #[test]
-    fn bom_is_zero_width_invisible() {
-        assert!(is_zero_width_invisible('\u{FEFF}'));
-    }
-    #[test]
-    fn regular_space_not_zero_width() {
-        assert!(!is_zero_width_invisible(' '));
-    }
-}
-```
-
-Also create stub files so the `pub mod` declarations compile:
-
-```rust
-// src/text/tsv.rs   (stub)
-// src/text/csv.rs   (stub)
-// src/text/json.rs  (stub)
-// src/text/display.rs (stub)
-```
-
-### Step 2: Run to verify RED
+### Step 2: Run tests — confirm RED
 
 ```bash
-cd ~/src/jsonguard && cargo test 2>&1 | grep -E "FAILED|error"
+cd ~/src/jsonguard && cargo test 2>&1
 ```
 
-Expected: tests that call `todo!()` panic → FAILED.
+Expected: compile error — `GuardInput` trait and `as_utf8_lossy` method don't exist yet, `Guarded`/`DecodedStr` structs don't exist.
 
-### Step 3: Implement GREEN
-
-Replace the `todo!()` bodies in `src/text/mod.rs` with the real implementations shown above in the "Shared character classification kernel" section.
-
-### Step 4: Verify GREEN
+### Step 3: Commit RED
 
 ```bash
-cd ~/src/jsonguard && cargo test 2>&1 | tail -4
+git add src/lib.rs src/guard_input.rs src/types.rs
+git commit -m "test(core): RED — GuardInput trait and Guarded/DecodedStr type tests"
 ```
 
-Expected: all tests pass.
+### Step 4: Implement (GREEN)
 
-### Step 5: RED commit, then GREEN commit
-
-```bash
-# RED was committed at step 2; now:
-git add src/lib.rs src/text/mod.rs src/text/tsv.rs src/text/csv.rs src/text/json.rs src/text/display.rs
-git commit --no-gpg-sign -m "feat(GREEN): text module kernel — is_control_or_boundary, is_zero_width_invisible"
-```
-
----
-
-## Task 2: `text::tsv` — `tsv_safe()`
-
-**Why tab→space not deletion:** TSV has no escape mechanism. Deleting a tab could silently merge two tokens (`"foo\tbar"` → `"foobar"`), changing meaning. Space preserves the token boundary. This matches Volatility3's convention. Document this in the function's doc comment.
-
-### Files
-- Modify: `src/text/tsv.rs`
-
-### Step 1: Write RED tests
-
-```rust
-// src/text/tsv.rs
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-
-/// Make `s` safe to emit as one TSV field (tab-separated values, no quoting).
-///
-/// # What is replaced
-///
-/// | Input | Output | Rationale |
-/// |---|---|---|
-/// | `\t` U+0009 | space | field-boundary char; replaced not deleted to preserve token boundary (matches Volatility3 convention) |
-/// | `\n` U+000A | space | record-boundary char |
-/// | `\r` U+000D | space | record-boundary char |
-/// | NUL U+0000 | removed | C-string truncation |
-/// | other C0 U+0001–U+001F | removed | terminal/parser confusion |
-/// | DEL U+007F | removed | control |
-/// | C1 controls U+0080–U+009F | removed | some terminals act on them |
-/// | Bidi overrides U+202A–U+202E, U+2066–U+2069, U+200E, U+200F | removed | RTL/reversal attacks |
-/// | All other chars | unchanged | preserve identity |
-///
-/// # Allocation
-///
-/// Returns `Cow::Borrowed` when the input is already clean (zero allocation).
-/// Returns `Cow::Owned` only when substitutions are needed.
-#[cfg(feature = "alloc")]
-pub fn tsv_safe(s: &str) -> Cow<'_, str> {
-    todo!()
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "alloc")]
-    use super::*;
-    #[cfg(feature = "alloc")]
-    use alloc::borrow::Cow;
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn clean_string_borrows() {
-        let s = "svchost.exe";
-        let result = tsv_safe(s);
-        assert!(matches!(result, Cow::Borrowed(_)), "clean input must not allocate");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn tab_replaced_with_space() {
-        assert_eq!(tsv_safe("foo\tbar"), "foo bar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn newline_replaced_with_space() {
-        assert_eq!(tsv_safe("foo\nbar"), "foo bar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn carriage_return_replaced_with_space() {
-        assert_eq!(tsv_safe("foo\rbar"), "foo bar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn nul_removed() {
-        assert_eq!(tsv_safe("foo\u{0000}bar"), "foobar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn c0_controls_removed() {
-        // SOH (0x01), BEL (0x07)
-        assert_eq!(tsv_safe("foo\u{0001}bar"), "foobar");
-        assert_eq!(tsv_safe("foo\u{0007}bar"), "foobar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn del_removed() {
-        assert_eq!(tsv_safe("foo\u{007F}bar"), "foobar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn c1_controls_removed() {
-        assert_eq!(tsv_safe("foo\u{0085}bar"), "foobar"); // NEL
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn rtl_override_removed() {
-        // U+202E RTL Override — classic "cod\u{202E}txt.exe" reversal attack
-        assert_eq!(tsv_safe("cod\u{202E}txt.exe"), "codtxt.exe");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn lrm_removed() {
-        assert_eq!(tsv_safe("foo\u{200E}bar"), "foobar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn unicode_preserved() {
-        assert_eq!(tsv_safe("lsass\u{00E9}.exe"), "lsass\u{00E9}.exe");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn chinese_preserved() {
-        assert_eq!(tsv_safe("系统进程"), "系统进程");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn empty_string() {
-        let result = tsv_safe("");
-        assert!(matches!(result, Cow::Borrowed(_)));
-        assert_eq!(result, "");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn multiple_replacements_in_one_pass() {
-        assert_eq!(tsv_safe("a\tb\nc\rd"), "a b c d");
-    }
-}
-```
-
-### Step 2: Verify RED
-
-```bash
-cd ~/src/jsonguard && cargo test text::tsv 2>&1 | grep -E "FAILED|panicked|error"
-```
-
-Expected: FAILED (todo! panics).
-
-### Step 3: Implement GREEN
+Fill in `src/guard_input.rs`:
 
 ```rust
 #[cfg(feature = "alloc")]
-pub fn tsv_safe(s: &str) -> Cow<'_, str> {
-    use crate::text::is_control_or_boundary;
-    if !s.chars().any(is_control_or_boundary) {
-        return Cow::Borrowed(s);
-    }
-    let mut out = alloc::string::String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\t' | '\n' | '\r' => out.push(' '),
-            c if is_control_or_boundary(c) => {} // remove: C0/C1/bidi (non-whitespace)
-            c => out.push(c),
-        }
-    }
-    Cow::Owned(out)
-}
-```
+use alloc::string::String;
 
-### Step 4: Verify GREEN
-
-```bash
-cd ~/src/jsonguard && cargo test text::tsv 2>&1 | tail -3
-```
-
-Expected: all tests pass.
-
-### Step 5: Commit
-
-```bash
-git add src/text/tsv.rs
-git commit --no-gpg-sign -m "feat(GREEN): text::tsv — tsv_safe() with Cow borrow optimization"
-```
-
----
-
-## Task 3: `text::csv` — `csv_field()`
-
-RFC 4180 + formula injection guard. The OWASP "CSV Injection" attack: a cell value starting with `= + - @` is interpreted as a formula by Excel/LibreOffice/Google Sheets when the CSV is opened. Forensic CSVs are routinely opened in spreadsheets. Fix: prefix `'` (apostrophe) — this forces spreadsheets to treat the cell as text, while being invisible in most display contexts.
-
-### Files
-- Modify: `src/text/csv.rs`
-
-### Step 1: Write RED tests
-
-```rust
-// src/text/csv.rs
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-
-/// Format one field for an RFC 4180 CSV row.
-///
-/// Rules applied in order:
-/// 1. Strip NUL and C0/C1 controls (except `\n`/`\r` which are legal inside
-///    a quoted field per RFC 4180). Strip bidi overrides.
-/// 2. Guard formula injection: if the stripped field starts with `= + - @`,
-///    a leading tab, or a leading CR, prefix with `'` (OWASP CSV Injection
-///    mitigation — forces spreadsheet to treat as text).
-/// 3. If the field contains `,`, `"`, `\n`, or `\r`: wrap in `"` and double
-///    any internal `"` → `""`.
-/// 4. Otherwise return as-is.
-///
-/// Apply to **every** free-text field in a CSV row — not just paths.
-#[cfg(feature = "alloc")]
-pub fn csv_field(s: &str) -> Cow<'_, str> {
-    todo!()
+mod private {
+    pub trait Sealed {}
+    impl Sealed for &str {}
+    impl<'a> Sealed for &'a [u8] {}
 }
 
-/// Returns true if `s` starts with a spreadsheet formula trigger character.
-pub fn has_formula_prefix(s: &str) -> bool {
-    todo!()
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "alloc")]
-    use super::*;
-
-    // --- has_formula_prefix ---
-    #[test]
-    fn formula_prefix_equals() { assert!(has_formula_prefix("=cmd")); }
-    #[test]
-    fn formula_prefix_plus() { assert!(has_formula_prefix("+1")); }
-    #[test]
-    fn formula_prefix_minus() { assert!(has_formula_prefix("-1")); }
-    #[test]
-    fn formula_prefix_at() { assert!(has_formula_prefix("@SUM")); }
-    #[test]
-    fn formula_prefix_tab() { assert!(has_formula_prefix("\t=cmd")); }
-    #[test]
-    fn formula_prefix_cr() { assert!(has_formula_prefix("\r=cmd")); }
-    #[test]
-    fn no_formula_prefix_svchost() { assert!(!has_formula_prefix("svchost.exe")); }
-    #[test]
-    fn no_formula_prefix_empty() { assert!(!has_formula_prefix("")); }
-
-    // --- csv_field ---
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn clean_field_borrows() {
-        let s = "svchost.exe";
-        let result = csv_field(s);
-        assert!(matches!(result, alloc::borrow::Cow::Borrowed(_)));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn field_with_comma_is_quoted() {
-        assert_eq!(csv_field("foo,bar"), r#""foo,bar""#);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn field_with_double_quote_is_quoted_and_doubled() {
-        assert_eq!(csv_field(r#"say "hi""#), r#""say ""hi"""#);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn field_with_newline_is_quoted() {
-        assert_eq!(csv_field("foo\nbar"), "\"foo\nbar\"");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn field_with_cr_is_quoted() {
-        assert_eq!(csv_field("foo\rbar"), "\"foo\rbar\"");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn formula_injection_equals_prefixed() {
-        assert_eq!(csv_field("=cmd|'/c calc'!A1"), "'=cmd|'/c calc'!A1");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn formula_injection_plus_prefixed() {
-        assert_eq!(csv_field("+malware"), "'+malware");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn formula_injection_at_prefixed() {
-        assert_eq!(csv_field("@SUM(1)"), "'@SUM(1)");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn nul_stripped_before_quoting() {
-        // NUL is stripped; result has no comma → no quoting needed
-        assert_eq!(csv_field("foo\u{0000}bar"), "foobar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn c0_controls_stripped_except_newline_cr() {
-        // BEL stripped, newline preserved inside quoting
-        assert_eq!(csv_field("foo\u{0007}bar"), "foobar");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn rtl_override_stripped() {
-        assert_eq!(csv_field("cod\u{202E}txt.exe"), "codtxt.exe");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn unicode_preserved_no_quoting() {
-        assert_eq!(csv_field("lsass\u{00E9}.exe"), "lsass\u{00E9}.exe");
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn empty_field_borrows() {
-        let result = csv_field("");
-        assert!(matches!(result, alloc::borrow::Cow::Borrowed(_)));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn formula_prefix_with_comma_both_guarded() {
-        // = prefix → prefix ', then contains comma → wrap in quotes
-        let result = csv_field("=foo,bar");
-        assert!(result.starts_with("'="));
-        assert!(result.contains(','));
-    }
-}
-```
-
-### Step 2: Verify RED
-
-```bash
-cd ~/src/jsonguard && cargo test text::csv 2>&1 | grep -E "FAILED|panicked"
-```
-
-### Step 3: Implement GREEN
-
-```rust
-pub fn has_formula_prefix(s: &str) -> bool {
-    // Strip leading whitespace controls (tab, CR) that could precede the trigger
-    let trimmed = s.trim_start_matches(|c| c == '\t' || c == '\r');
-    matches!(trimmed.chars().next(), Some('=' | '+' | '-' | '@'))
+pub trait GuardInput: private::Sealed {
+    fn as_utf8_lossy(&self) -> (String, bool);
 }
 
 #[cfg(feature = "alloc")]
-pub fn csv_field(s: &str) -> Cow<'_, str> {
-    use crate::text::is_control_or_boundary;
-    use alloc::string::String;
-
-    // Step 1: strip controls (keep \n and \r — legal in quoted RFC 4180 fields)
-    let needs_control_strip = s.chars().any(|c| {
-        is_control_or_boundary(c) && c != '\n' && c != '\r'
-    });
-    let cleaned: Cow<'_, str> = if needs_control_strip {
-        let mut buf = String::with_capacity(s.len());
-        for c in s.chars() {
-            if is_control_or_boundary(c) && c != '\n' && c != '\r' {
-                // strip: NUL, C0 (except \n\r), C1, bidi
-            } else {
-                buf.push(c);
-            }
-        }
-        Cow::Owned(buf)
-    } else {
-        Cow::Borrowed(s)
-    };
-
-    // Step 2: formula injection guard
-    let needs_formula_guard = has_formula_prefix(&cleaned);
-    let guarded: Cow<'_, str> = if needs_formula_guard {
-        let mut buf = String::with_capacity(cleaned.len() + 1);
-        buf.push('\'');
-        buf.push_str(&cleaned);
-        Cow::Owned(buf)
-    } else {
-        cleaned
-    };
-
-    // Step 3: RFC 4180 quoting
-    let needs_quoting = guarded.chars().any(|c| matches!(c, ',' | '"' | '\n' | '\r'));
-    if !needs_quoting {
-        return guarded;
+impl GuardInput for &str {
+    fn as_utf8_lossy(&self) -> (String, bool) {
+        ((*self).to_owned(), false)
     }
-    let mut out = String::with_capacity(guarded.len() + 2);
-    out.push('"');
-    for c in guarded.chars() {
-        if c == '"' { out.push('"'); } // RFC 4180: double internal quotes
-        out.push(c);
-    }
-    out.push('"');
-    Cow::Owned(out)
-}
-```
-
-### Step 4: Verify GREEN
-
-```bash
-cd ~/src/jsonguard && cargo test text::csv 2>&1 | tail -3
-```
-
-### Step 5: Commit
-
-```bash
-git add src/text/csv.rs
-git commit --no-gpg-sign -m "feat(GREEN): text::csv — csv_field() RFC 4180 + formula injection guard"
-```
-
----
-
-## Task 4: `text::json` — `jsonl_safe()`
-
-JSONL (JSON Lines) stores one JSON object per line. The only extra concern vs. JSON is that `\n` and `\r` in a string value would split the line and corrupt the JSONL stream. `serde_json` handles all character escaping inside the JSON value correctly; this function guards the **line boundary** specifically.
-
-**Note for callers:** If you are using `serde_json::json!` or `serde_json::to_string`, you do NOT need `jsonl_safe` on individual field values — serde_json already escapes `\n`/`\r` as `\n`/`\r`. `jsonl_safe` is for callers who hand-construct JSONL by concatenating raw strings (uncommon but occasionally needed for streaming).
-
-### Files
-- Modify: `src/text/json.rs`
-
-### Step 1: Write RED tests
-
-```rust
-// src/text/json.rs
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-
-/// Strip `\n` and `\r` from a string that will be embedded in a JSONL
-/// (JSON Lines) value — guards against line-splitting that corrupts the
-/// JSONL stream.
-///
-/// # When to use
-///
-/// Only when hand-constructing JSONL without a full JSON serializer.
-/// If you use `serde_json::to_string` / `serde_json::json!`, this is
-/// unnecessary — serde_json escapes newlines automatically.
-#[cfg(feature = "alloc")]
-pub fn jsonl_safe(s: &str) -> Cow<'_, str> {
-    todo!()
 }
 
-/// Returns true if `s` contains any character that would split a JSONL line.
-pub fn has_jsonl_line_break(s: &str) -> bool {
-    todo!()
+#[cfg(feature = "alloc")]
+impl GuardInput for &[u8] {
+    fn as_utf8_lossy(&self) -> (String, bool) {
+        use alloc::borrow::Cow;
+        let cow = String::from_utf8_lossy(self);
+        let lossy = matches!(cow, Cow::Owned(_));
+        (cow.into_owned(), lossy)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "alloc")]
-    use alloc::borrow::Cow;
 
     #[test]
-    fn detects_newline() { assert!(has_jsonl_line_break("foo\nbar")); }
-    #[test]
-    fn detects_cr() { assert!(has_jsonl_line_break("foo\rbar")); }
-    #[test]
-    fn clean_string_no_break() { assert!(!has_jsonl_line_break("svchost.exe")); }
-    #[test]
-    fn empty_no_break() { assert!(!has_jsonl_line_break("")); }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn clean_borrows() {
-        let s = "svchost.exe";
-        assert!(matches!(jsonl_safe(s), Cow::Borrowed(_)));
+    fn str_input_not_lossy() {
+        let (text, lossy) = "hello".as_utf8_lossy();
+        assert_eq!(text, "hello");
+        assert!(!lossy);
     }
-    #[cfg(feature = "alloc")]
+
     #[test]
-    fn newline_removed() { assert_eq!(jsonl_safe("foo\nbar"), "foobar"); }
-    #[cfg(feature = "alloc")]
+    fn bytes_valid_utf8_not_lossy() {
+        let (text, lossy) = b"hello".as_utf8_lossy();
+        assert_eq!(text, "hello");
+        assert!(!lossy);
+    }
+
     #[test]
-    fn cr_removed() { assert_eq!(jsonl_safe("foo\rbar"), "foobar"); }
-    #[cfg(feature = "alloc")]
+    fn bytes_invalid_utf8_is_lossy() {
+        let (text, lossy) = b"\xFF\xFE".as_utf8_lossy();
+        assert!(text.contains('\u{FFFD}'));
+        assert!(lossy);
+    }
+
     #[test]
-    fn tab_preserved() { assert_eq!(jsonl_safe("foo\tbar"), "foo\tbar"); }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn unicode_preserved() { assert_eq!(jsonl_safe("中文"), "中文"); }
+    fn bytes_big5_0x5c_second_byte() {
+        let (text, lossy) = b"\xB3\x5C".as_utf8_lossy();
+        assert!(lossy);
+        assert!(!text.contains('\\'));
+    }
 }
 ```
 
-### Step 2: Verify RED
-
-```bash
-cd ~/src/jsonguard && cargo test text::json 2>&1 | grep FAILED
-```
-
-### Step 3: Implement GREEN
+Fill in `src/types.rs`:
 
 ```rust
-pub fn has_jsonl_line_break(s: &str) -> bool {
-    s.contains('\n') || s.contains('\r')
-}
+#[cfg(feature = "alloc")]
+use alloc::string::String;
 
 #[cfg(feature = "alloc")]
-pub fn jsonl_safe(s: &str) -> Cow<'_, str> {
-    if !has_jsonl_line_break(s) {
-        return Cow::Borrowed(s);
-    }
-    Cow::Owned(s.chars().filter(|&c| c != '\n' && c != '\r').collect())
-}
-```
-
-### Step 4 + 5: Verify + commit
-
-```bash
-cd ~/src/jsonguard && cargo test text::json 2>&1 | tail -3
-git add src/text/json.rs
-git commit --no-gpg-sign -m "feat(GREEN): text::json — jsonl_safe(), has_jsonl_line_break()"
-```
-
----
-
-## Task 5: `text::display` — `display_safe()` + `cap_display()`
-
-Terminal display context: no injection risk, but RTL override, ANSI/ESC injection, and invisible zero-width chars are real threats. Key difference from `tsv_safe`: **zero-width invisible chars are replaced with visible placeholders** (`<U+200B>` etc.) rather than deleted — so a forensic analyst *sees* the anomaly rather than having evidence silently removed.
-
-**Note on `unicode-width`:** `cap_display` needs column-width measurement. Add `unicode-width = "0.1"` to `[dependencies]` and gate it under the `alloc` feature (it is `no_std` compatible). Do NOT add it as mandatory — add it as a regular dependency (it is tiny, ~15 KB, no unsafe).
-
-Update `Cargo.toml`:
-```toml
-[dependencies]
-unicode-width = { version = "0.1", default-features = false }
-```
-
-### Files
-- Modify: `src/text/display.rs`
-- Modify: `Cargo.toml`
-
-### Step 1: Write RED tests
-
-```rust
-// src/text/display.rs
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-
-/// Make `s` safe for display in an interactive terminal table cell.
-///
-/// - C0/C1 controls (except `\n` which comfy-table handles) → removed.
-///   `\r` is **explicitly removed** (bare CR rewinds cursor, enabling row-overwrite).
-/// - Bidi override chars → removed.
-/// - Zero-width invisible chars (ZWSP, BOM, ZWNJ, ZWJ, word joiner) →
-///   replaced with visible placeholder `<U+XXXX>` so the analyst sees the anomaly.
-/// - All other chars → unchanged.
-#[cfg(feature = "alloc")]
-pub fn display_safe(s: &str) -> Cow<'_, str> {
-    todo!()
-}
-
-/// Cap `s` at `max_cols` display columns (measured in Unicode terminal column
-/// width via `unicode-width`). Appends `…` (U+2026) if truncated.
-/// Returns `Cow::Borrowed` when the string is already within the limit.
-#[cfg(feature = "alloc")]
-pub fn cap_display(s: &str, max_cols: usize) -> Cow<'_, str> {
-    todo!()
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "alloc")]
-    use super::*;
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn clean_string_borrows() {
-        assert!(matches!(display_safe("svchost.exe"), alloc::borrow::Cow::Borrowed(_)));
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn cr_removed() {
-        // bare \r cursor-rewind attack
-        assert_eq!(display_safe("foo\rbar"), "foobar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn rtl_override_removed() {
-        assert_eq!(display_safe("cod\u{202E}txt.exe"), "codtxt.exe");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn nul_removed() {
-        assert_eq!(display_safe("foo\u{0000}bar"), "foobar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn esc_removed() {
-        // ESC = U+001B (ANSI injection vector)
-        assert_eq!(display_safe("foo\u{001B}[31mbar"), "foobar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn zwsp_becomes_placeholder() {
-        assert_eq!(display_safe("foo\u{200B}bar"), "foo<U+200B>bar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn bom_becomes_placeholder() {
-        assert_eq!(display_safe("\u{FEFF}foo"), "<U+FEFF>foo");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn zwnj_becomes_placeholder() {
-        assert_eq!(display_safe("foo\u{200C}bar"), "foo<U+200C>bar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn newline_preserved() {
-        // \n is preserved — comfy-table uses it for in-cell line breaks
-        assert_eq!(display_safe("foo\nbar"), "foo\nbar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn cap_display_short_borrows() {
-        let s = "hello";
-        assert!(matches!(cap_display(s, 80), alloc::borrow::Cow::Borrowed(_)));
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn cap_display_truncates_ascii() {
-        let result = cap_display("hello world", 5);
-        assert_eq!(result, "hell…"); // 4 chars + ellipsis = 5 cols
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn cap_display_cjk_counts_double_width() {
-        // CJK chars are 2 columns wide; cap at 4 cols
-        let result = cap_display("中文AB", 4);
-        assert_eq!(result, "中文"); // 中(2)+文(2)=4, no ellipsis needed
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn cap_display_zero_limit() {
-        assert_eq!(cap_display("hello", 0), "");
-    }
-}
-```
-
-### Step 2: Verify RED
-
-```bash
-cd ~/src/jsonguard && cargo test text::display 2>&1 | grep FAILED
-```
-
-### Step 3: Implement GREEN
-
-```rust
-use unicode_width::UnicodeWidthChar;
-
-#[cfg(feature = "alloc")]
-pub fn display_safe(s: &str) -> Cow<'_, str> {
-    use crate::text::{is_control_or_boundary, is_zero_width_invisible};
-    use alloc::string::String;
-
-    fn needs_change(c: char) -> bool {
-        // \n is kept (comfy-table), but \r is a cursor-rewind attack
-        (is_control_or_boundary(c) && c != '\n') || is_zero_width_invisible(c)
-    }
-
-    if !s.chars().any(needs_change) {
-        return Cow::Borrowed(s);
-    }
-
-    let mut out = String::with_capacity(s.len() + 32);
-    for c in s.chars() {
-        if is_zero_width_invisible(c) {
-            // Make anomaly visible — do not silently delete evidence
-            use alloc::format;
-            out.push_str(&format!("<U+{:04X}>", c as u32));
-        } else if is_control_or_boundary(c) && c != '\n' {
-            // Drop: CR, NUL, ESC, other C0/C1, bidi overrides
-        } else {
-            out.push(c);
-        }
-    }
-    Cow::Owned(out)
-}
-
-#[cfg(feature = "alloc")]
-pub fn cap_display(s: &str, max_cols: usize) -> Cow<'_, str> {
-    use alloc::string::String;
-
-    if max_cols == 0 {
-        return Cow::Owned(String::new());
-    }
-
-    let mut cols = 0usize;
-    let mut end_byte = s.len(); // assume fits
-    let mut fits = true;
-
-    for (i, c) in s.char_indices() {
-        let w = c.width().unwrap_or(0);
-        if cols + w > max_cols {
-            end_byte = i;
-            fits = false;
-            break;
-        }
-        cols += w;
-    }
-
-    if fits {
-        return Cow::Borrowed(s);
-    }
-
-    // Truncate and append ellipsis (ellipsis itself is 1 col wide)
-    let mut out = String::with_capacity(end_byte + 3);
-    // back off one more char to fit the ellipsis if needed
-    let mut truncated = &s[..end_byte];
-    while !truncated.is_empty() {
-        let last_char_width = truncated.chars().next_back()
-            .and_then(|c| c.width()).unwrap_or(0);
-        let current_cols: usize = truncated.chars()
-            .map(|c| c.width().unwrap_or(0)).sum();
-        if current_cols + 1 <= max_cols { // +1 for ellipsis
-            break;
-        }
-        truncated = &truncated[..truncated.len() - last_char_width.max(1)];
-    }
-    out.push_str(truncated);
-    out.push('…');
-    Cow::Owned(out)
-}
-```
-
-### Step 4 + 5: Verify + commit
-
-```bash
-cd ~/src/jsonguard && cargo test text::display 2>&1 | tail -3
-git add src/text/display.rs Cargo.toml
-git commit --no-gpg-sign -m "feat(GREEN): text::display — display_safe(), cap_display() with unicode-width"
-```
-
----
-
-## Task 6: `decode` — `DecodedStr` + `bytes_to_utf8_lossy_safe()`
-
-The DBCS/Big5 problem lives here. A Rust `String` is always valid UTF-8, so there is no injection risk inside one. The risk is at the **bytes → String boundary**: `from_utf8_lossy` silently replaces invalid bytes with U+FFFD, making a Big5-encoded `許` (0xB3 0x5C) look like `"\u{FFFD}\"` — a replacement char followed by a real backslash. The analyst cannot tell if U+FFFD appeared in the real name or if it is an artifact of lossy decoding. The `lossy` flag solves this.
-
-### Files
-- Create: `src/decode.rs`
-- Modify: `src/lib.rs` (add `pub mod decode;`)
-
-### Step 1: Write RED tests
-
-```rust
-// src/decode.rs
-
-/// The result of decoding raw bytes into a Rust String.
-///
-/// `lossy: true` means one or more bytes could not be decoded losslessly;
-/// U+FFFD replacement characters appear where the undecodable bytes were.
-/// Callers should surface this flag to analysts so they know the displayed
-/// name may not accurately represent the original bytes.
-#[cfg(feature = "alloc")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DecodedStr {
-    pub text: alloc::string::String,
+pub struct Guarded {
+    pub value: String,
     pub lossy: bool,
 }
 
-/// Decode raw bytes into a `DecodedStr`, flagging lossy substitutions.
-///
-/// Strategy:
-/// 1. Try `str::from_utf8`. If it succeeds: `lossy: false`.
-/// 2. Otherwise: `String::from_utf8_lossy`, set `lossy: true`.
-///
-/// Does **not** attempt DBCS/Big5/GBK/Shift-JIS decoding — add the
-/// `encoding_rs` crate behind a `legacy-codepages` feature for that.
 #[cfg(feature = "alloc")]
-pub fn bytes_to_utf8_lossy_safe(bytes: &[u8]) -> DecodedStr {
-    todo!()
+impl core::fmt::Display for Guarded {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.value)
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "alloc")]
-    use super::*;
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn valid_utf8_not_lossy() {
-        let r = bytes_to_utf8_lossy_safe(b"svchost.exe");
-        assert_eq!(r.text, "svchost.exe");
-        assert!(!r.lossy);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn valid_utf8_unicode_not_lossy() {
-        let r = bytes_to_utf8_lossy_safe("lsassé.exe".as_bytes());
-        assert!(!r.lossy);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn invalid_utf8_is_lossy() {
-        // 0xFF is not valid UTF-8
-        let r = bytes_to_utf8_lossy_safe(b"foo\xFFbar");
-        assert!(r.lossy);
-        assert!(r.text.contains('\u{FFFD}'));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn big5_trail_byte_is_lossy() {
-        // Big5 許 = 0xB3 0x5C; 0xB3 is invalid UTF-8 lead → lossy
-        let r = bytes_to_utf8_lossy_safe(&[0xB3, 0x5C]);
-        assert!(r.lossy);
-        // The 0x5C byte decodes as '\' in the lossy output — confirm we didn't
-        // silently produce a phantom backslash that looks clean
-        assert!(r.text.contains('\u{FFFD}'));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn empty_bytes_not_lossy() {
-        let r = bytes_to_utf8_lossy_safe(b"");
-        assert_eq!(r.text, "");
-        assert!(!r.lossy);
-    }
-}
-```
-
-### Step 2: Verify RED, Step 3: Implement GREEN
-
-```rust
 #[cfg(feature = "alloc")]
-pub fn bytes_to_utf8_lossy_safe(bytes: &[u8]) -> DecodedStr {
-    match core::str::from_utf8(bytes) {
-        Ok(s) => DecodedStr { text: alloc::string::String::from(s), lossy: false },
-        Err(_) => DecodedStr {
-            text: alloc::string::String::from_utf8_lossy(bytes).into_owned(),
-            lossy: true,
-        },
-    }
-}
-```
-
-### Step 4 + 5: Verify + commit
-
-```bash
-cd ~/src/jsonguard && cargo test decode 2>&1 | tail -3
-git add src/decode.rs src/lib.rs
-git commit --no-gpg-sign -m "feat(GREEN): decode — DecodedStr + bytes_to_utf8_lossy_safe() with lossy flag"
-```
-
----
-
-## Task 7: `nosql::mongo` — MongoDB key sanitization
-
-MongoDB executes `$`-prefixed key names as operators (`$where`, `$gt`, `$ne`, etc.). It also uses `.` as a field-path separator. These are **key-name** threats, not value threats — MongoDB stores arbitrary string values safely.
-
-Feature gate: `#[cfg(feature = "nosql")]`
-
-### Files
-- Create: `src/nosql/mod.rs`
-- Create: `src/nosql/mongo.rs`
-- Modify: `src/lib.rs` (add `#[cfg(feature = "nosql")] pub mod nosql;`)
-
-### Step 1: Write RED tests
-
-```rust
-// src/nosql/mongo.rs
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-
-/// Returns true if `key` is (or starts with) a MongoDB operator.
-/// MongoDB operators begin with `$`.
-pub fn has_mongo_operator(key: &str) -> bool {
-    todo!()
+pub struct DecodedStr {
+    pub text: String,
+    pub lossy: bool,
 }
 
-/// Sanitize a string for use as a MongoDB **key name**.
-///
-/// Removes `$` from the start (operator prefix) and replaces `.` with `_`
-/// (field-path separator). These are key-name-only threats — MongoDB
-/// stores arbitrary string values without this sanitization.
 #[cfg(feature = "alloc")]
-pub fn sanitize_mongo_key(key: &str) -> Cow<'_, str> {
-    todo!()
+impl core::fmt::Display for DecodedStr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.text)
+    }
 }
 
 #[cfg(test)]
@@ -1111,554 +302,1087 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_operator_dollar_where() { assert!(has_mongo_operator("$where")); }
-    #[test]
-    fn has_operator_dollar_gt() { assert!(has_mongo_operator("$gt")); }
-    #[test]
-    fn no_operator_plain_name() { assert!(!has_mongo_operator("name")); }
-    #[test]
-    fn no_operator_empty() { assert!(!has_mongo_operator("")); }
+    fn guarded_display_emits_value() {
+        let g = Guarded { value: "hello".to_string(), lossy: false };
+        assert_eq!(g.to_string(), "hello");
+    }
 
-    #[cfg(feature = "alloc")]
     #[test]
-    fn plain_key_borrows() {
-        let k = "process_name";
-        assert!(matches!(sanitize_mongo_key(k), Cow::Borrowed(_)));
+    fn guarded_lossy_flag_accessible() {
+        let g = Guarded { value: "x".to_string(), lossy: true };
+        assert!(g.lossy);
     }
-    #[cfg(feature = "alloc")]
+
     #[test]
-    fn dollar_prefix_removed() {
-        assert_eq!(sanitize_mongo_key("$where"), "where");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn dot_replaced_with_underscore() {
-        assert_eq!(sanitize_mongo_key("foo.bar"), "foo_bar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn dollar_and_dot_combined() {
-        assert_eq!(sanitize_mongo_key("$foo.bar"), "foo_bar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn multiple_dots_replaced() {
-        assert_eq!(sanitize_mongo_key("a.b.c"), "a_b_c");
+    fn decoded_str_display_emits_text() {
+        let d = DecodedStr { text: "world".to_string(), lossy: false };
+        assert_eq!(d.to_string(), "world");
     }
 }
 ```
 
-### Step 3: Implement GREEN
-
-```rust
-pub fn has_mongo_operator(key: &str) -> bool {
-    key.starts_with('$')
-}
-
-#[cfg(feature = "alloc")]
-pub fn sanitize_mongo_key(key: &str) -> Cow<'_, str> {
-    let trimmed = key.trim_start_matches('$');
-    let needs_dot_replace = trimmed.contains('.');
-    if trimmed.len() == key.len() && !needs_dot_replace {
-        return Cow::Borrowed(key);
-    }
-    Cow::Owned(trimmed.replace('.', "_"))
-}
-```
-
-### Commit
-
-```bash
-cd ~/src/jsonguard && cargo test --features nosql nosql::mongo 2>&1 | tail -3
-git add src/nosql/ src/lib.rs
-git commit --no-gpg-sign -m "feat(GREEN): nosql::mongo — sanitize_mongo_key(), has_mongo_operator()"
-```
-
----
-
-## Task 8: `nosql::elastic` — Elasticsearch query sanitization
-
-Elasticsearch uses the Lucene query syntax. Special characters that must be escaped when a value is used in a query string: `+ - = && || > < ! ( ) { } [ ] ^ " ~ * ? : \ /`. Also, field names should not contain `.` (nested field separator) unless intentional.
-
-### Files
-- Create: `src/nosql/elastic.rs`
-- Modify: `src/nosql/mod.rs`
-
-### Step 1: Write RED tests
-
-```rust
-// src/nosql/elastic.rs
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-
-/// Lucene query special characters that must be escaped with `\`.
-pub const LUCENE_SPECIAL: &[char] = &[
-    '+', '-', '=', '&', '|', '>', '<', '!',
-    '(', ')', '{', '}', '[', ']', '^', '"',
-    '~', '*', '?', ':', '\\', '/',
-];
-
-/// Escape a value for use inside a Lucene/Elasticsearch query string.
-/// Prefixes each special character with `\`.
-#[cfg(feature = "alloc")]
-pub fn sanitize_es_query(s: &str) -> Cow<'_, str> {
-    todo!()
-}
-
-/// Sanitize a string for use as an Elasticsearch field name.
-/// Replaces `.` with `_` (nested field separator).
-#[cfg(feature = "alloc")]
-pub fn sanitize_es_field(s: &str) -> Cow<'_, str> {
-    todo!()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn plain_value_borrows() {
-        assert!(matches!(sanitize_es_query("svchost"), Cow::Borrowed(_)));
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn colon_escaped() {
-        assert_eq!(sanitize_es_query("key:value"), r"key\:value");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn plus_escaped() {
-        assert_eq!(sanitize_es_query("+admin"), r"\+admin");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn wildcard_escaped() {
-        assert_eq!(sanitize_es_query("foo*bar"), r"foo\*bar");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn backslash_escaped() {
-        assert_eq!(sanitize_es_query(r"C:\Windows"), r"C\:\\Windows");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn multiple_specials() {
-        assert_eq!(sanitize_es_query("a+b:c"), r"a\+b\:c");
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn field_plain_borrows() {
-        assert!(matches!(sanitize_es_field("process_name"), Cow::Borrowed(_)));
-    }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn field_dot_replaced() {
-        assert_eq!(sanitize_es_field("host.name"), "host_name");
-    }
-}
-```
-
-### Step 3: Implement GREEN
-
-```rust
-#[cfg(feature = "alloc")]
-pub fn sanitize_es_query(s: &str) -> Cow<'_, str> {
-    if !s.chars().any(|c| LUCENE_SPECIAL.contains(&c)) {
-        return Cow::Borrowed(s);
-    }
-    let mut out = alloc::string::String::with_capacity(s.len() * 2);
-    for c in s.chars() {
-        if LUCENE_SPECIAL.contains(&c) { out.push('\\'); }
-        out.push(c);
-    }
-    Cow::Owned(out)
-}
-
-#[cfg(feature = "alloc")]
-pub fn sanitize_es_field(s: &str) -> Cow<'_, str> {
-    if !s.contains('.') { return Cow::Borrowed(s); }
-    Cow::Owned(s.replace('.', "_"))
-}
-```
-
-### Commit
-
-```bash
-cd ~/src/jsonguard && cargo test --features nosql nosql::elastic 2>&1 | tail -3
-git add src/nosql/elastic.rs src/nosql/mod.rs
-git commit --no-gpg-sign -m "feat(GREEN): nosql::elastic — sanitize_es_query() Lucene escape, sanitize_es_field()"
-```
-
----
-
-## Task 9: `nosql::redis` — Redis RESP injection
-
-Redis uses the RESP (REdis Serialization Protocol) wire format. Commands are separated by `\r\n`. If a user-controlled string is spliced into a Redis command string (as opposed to using a proper Redis client library with parameterization), embedded `\r\n` sequences can inject additional commands. Tab has no special meaning in RESP.
-
-### Files
-- Create: `src/nosql/redis.rs`
-- Modify: `src/nosql/mod.rs`
-
-### Step 1: Write RED tests
-
-```rust
-// src/nosql/redis.rs
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-
-/// Strip `\r` and `\n` from a string used as a Redis command argument.
-///
-/// RESP uses `\r\n` as command/line separator. Embedded newlines in a
-/// raw-string argument can inject additional commands. Use a proper Redis
-/// client library with parameterized commands instead of hand-constructing
-/// RESP; this function is a defense-in-depth fallback.
-#[cfg(feature = "alloc")]
-pub fn sanitize_redis_arg(s: &str) -> Cow<'_, str> {
-    todo!()
-}
-
-/// Returns true if `s` contains a RESP command separator.
-pub fn has_resp_separator(s: &str) -> bool {
-    todo!()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clean_no_separator() { assert!(!has_resp_separator("GET foo")); }
-    #[test]
-    fn newline_is_separator() { assert!(has_resp_separator("foo\nbar")); }
-    #[test]
-    fn cr_is_separator() { assert!(has_resp_separator("foo\rbar")); }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn clean_borrows() { assert!(matches!(sanitize_redis_arg("key"), Cow::Borrowed(_))); }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn newline_removed() { assert_eq!(sanitize_redis_arg("foo\nbar"), "foobar"); }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn cr_removed() { assert_eq!(sanitize_redis_arg("foo\rbar"), "foobar"); }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn crlf_removed() { assert_eq!(sanitize_redis_arg("foo\r\nSET evil 1"), "fooSET evil 1"); }
-}
-```
-
-### Step 3 + commit
-
-```rust
-pub fn has_resp_separator(s: &str) -> bool { s.contains('\n') || s.contains('\r') }
-
-#[cfg(feature = "alloc")]
-pub fn sanitize_redis_arg(s: &str) -> Cow<'_, str> {
-    if !has_resp_separator(s) { return Cow::Borrowed(s); }
-    Cow::Owned(s.chars().filter(|&c| c != '\n' && c != '\r').collect())
-}
-```
-
-```bash
-cd ~/src/jsonguard && cargo test --features nosql nosql::redis 2>&1 | tail -3
-git add src/nosql/redis.rs src/nosql/mod.rs
-git commit --no-gpg-sign -m "feat(GREEN): nosql::redis — sanitize_redis_arg(), has_resp_separator()"
-```
-
----
-
-## Task 10: `binary::bson` — BSON key sanitization
-
-BSON (Binary JSON, used by MongoDB) has the same `$`-operator and `.`-separator key threats as MongoDB. The `sanitize_bson_key` function is therefore identical to `sanitize_mongo_key` — but lives in the `binary` module because BSON is a binary serialization format, not a text format.
-
-To avoid code duplication, `binary::bson` re-exports from `nosql::mongo`. This requires both `binary` and `nosql` features together; document this in the module.
-
-Feature gate: `#[cfg(all(feature = "binary", feature = "nosql"))]` for the shared implementation. Alternatively, duplicate the tiny logic (3 lines). **Decision: duplicate** — avoids forcing `nosql` as a dependency of `binary`. Document the intentional duplication.
-
-### Files
-- Create: `src/binary/mod.rs`
-- Create: `src/binary/bson.rs`
-- Create: `src/binary/msgpack.rs`
-- Create: `src/binary/protobuf.rs`
-- Modify: `src/lib.rs`
-
-### Step 1: Write RED tests (`src/binary/bson.rs`)
-
-```rust
-// src/binary/bson.rs
-//! BSON key sanitization.
-//!
-//! BSON shares MongoDB's key-name threat model: `$`-prefixed keys are
-//! operator names; `.` is the field-path separator. The `sanitize_bson_key`
-//! implementation is intentionally duplicated from `nosql::mongo` to avoid
-//! coupling the `binary` feature to the `nosql` feature.
-#[cfg(feature = "alloc")]
-use alloc::borrow::Cow;
-
-pub fn has_bson_operator(key: &str) -> bool { todo!() }
-
-#[cfg(feature = "alloc")]
-pub fn sanitize_bson_key(key: &str) -> Cow<'_, str> { todo!() }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn operator_detected() { assert!(has_bson_operator("$where")); }
-    #[test]
-    fn plain_not_operator() { assert!(!has_bson_operator("name")); }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn plain_borrows() { assert!(matches!(sanitize_bson_key("name"), Cow::Borrowed(_))); }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn dollar_stripped() { assert_eq!(sanitize_bson_key("$gt"), "gt"); }
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn dot_replaced() { assert_eq!(sanitize_bson_key("a.b"), "a_b"); }
-}
-```
-
-### Implementation (identical logic to mongo, duplicated intentionally)
-
-```rust
-pub fn has_bson_operator(key: &str) -> bool { key.starts_with('$') }
-
-#[cfg(feature = "alloc")]
-pub fn sanitize_bson_key(key: &str) -> Cow<'_, str> {
-    let trimmed = key.trim_start_matches('$');
-    if trimmed.len() == key.len() && !trimmed.contains('.') {
-        return Cow::Borrowed(key);
-    }
-    Cow::Owned(trimmed.replace('.', "_"))
-}
-```
-
-`src/binary/msgpack.rs` and `src/binary/protobuf.rs` are **advisory-only** modules — they contain only documentation, no executable code. Write them as doc-comment-only module files.
-
-```rust
-// src/binary/msgpack.rs
-//! MessagePack advisory guidance.
-//!
-//! MessagePack is a binary format; string values are length-prefixed and do
-//! not use delimiter characters. There is no classic injection risk comparable
-//! to CSV/TSV for MessagePack values.
-//!
-//! # Recommendations
-//!
-//! - **Use typed schemas.** Arbitrary-type fields (e.g., MessagePack's `Any`
-//!   / `Value` enum) can be coerced to unexpected types by crafted data.
-//!   Always validate field types on deserialization.
-//! - **Cap string lengths.** A multi-megabyte string in a "process name" field
-//!   is evidence of corruption or an attack. Validate length before storing.
-//! - **Validate keys.** Map keys in MessagePack can be arbitrary types; if
-//!   you use string keys, apply the same `$`/`.` guard as BSON keys when
-//!   the data is forwarded to MongoDB.
-```
-
-```rust
-// src/binary/protobuf.rs
-//! Protocol Buffers advisory guidance.
-//!
-//! Protocol Buffers (proto2/proto3) is injection-proof at the wire level:
-//! field identity is determined by numeric field numbers, not string names.
-//! A crafted string value in a `string` field cannot change the schema.
-//!
-//! # Remaining risks
-//!
-//! - **Proto-JSON mapping.** If you use `prost`'s JSON serialization or
-//!   `protoc-gen-openapi`, the field *names* are human-readable strings and
-//!   the standard JSON injection risks apply. Use `serde_json::json!` or a
-//!   proper serializer — never hand-roll JSON from proto field values.
-//! - **Arbitrary bytes in `bytes` fields.** A `bytes` field accepts any byte
-//!   sequence. If the receiving code re-interprets these bytes as a command
-//!   or SQL query, injection is possible at that boundary — apply the
-//!   appropriate sanitizer there, not at the proto encoding layer.
-```
-
-### Commit
-
-```bash
-cd ~/src/jsonguard && cargo test --features binary binary 2>&1 | tail -3
-git add src/binary/ src/lib.rs
-git commit --no-gpg-sign -m "feat(GREEN): binary — bson key sanitization + msgpack/protobuf advisory docs"
-```
-
----
-
-## Task 11: Property-based tests with `proptest`
-
-Add property tests to verify the invariants that matter most — particularly that `tsv_safe` and `csv_field` never produce output that contains the forbidden characters.
-
-### Files
-- Create: `tests/proptest_sanitize.rs`
-
-```rust
-// tests/proptest_sanitize.rs
-use jsonguard::text::{tsv::tsv_safe, csv::csv_field};
-use proptest::prelude::*;
-
-proptest! {
-    #[test]
-    fn tsv_safe_never_contains_tab(s in ".*") {
-        let result = tsv_safe(&s);
-        prop_assert!(!result.contains('\t'), "tab found in tsv_safe output: {:?}", result);
-    }
-
-    #[test]
-    fn tsv_safe_never_contains_newline(s in ".*") {
-        let result = tsv_safe(&s);
-        prop_assert!(!result.contains('\n'));
-        prop_assert!(!result.contains('\r'));
-    }
-
-    #[test]
-    fn tsv_safe_never_contains_c0(s in ".*") {
-        let result = tsv_safe(&s);
-        for c in result.chars() {
-            prop_assert!(
-                c >= '\u{0020}' || c == '\n',  // space and above, or newline (space substitute)
-                "C0 control found: U+{:04X}", c as u32
-            );
-        }
-    }
-
-    #[test]
-    fn csv_field_parseable(s in ".*") {
-        let field = csv_field(&s);
-        // If quoted: must start and end with ", and internal " must be ""
-        if field.starts_with('"') {
-            prop_assert!(field.ends_with('"'), "quoted field must end with quote");
-        }
-        // Must never start with = + - @ (formula injection)
-        prop_assert!(!matches!(field.chars().next(), Some('=' | '+' | '-' | '@')),
-            "formula prefix in output: {:?}", &field[..4.min(field.len())]);
-    }
-
-    #[test]
-    fn clean_strings_borrow(s in "[A-Za-z0-9 ._/-]{0,100}") {
-        // ASCII alphanumeric/common-punct strings should never allocate
-        use std::borrow::Cow;
-        let t = tsv_safe(&s);
-        prop_assert!(matches!(t, Cow::Borrowed(_)), "expected borrow for clean string: {:?}", s);
-        let c = csv_field(&s);
-        prop_assert!(matches!(c, Cow::Borrowed(_)), "expected borrow for clean CSV string: {:?}", s);
-    }
-}
-```
-
-Run:
-```bash
-cd ~/src/jsonguard && cargo test --test proptest_sanitize 2>&1 | tail -5
-```
-
-Commit:
-```bash
-git add tests/proptest_sanitize.rs
-git commit --no-gpg-sign -m "test: proptest invariants for tsv_safe and csv_field"
-```
-
----
-
-## Task 12: Public API cleanup + `lib.rs` re-exports + README
-
-### `src/lib.rs` (final state)
+Update `src/lib.rs` to re-export:
 
 ```rust
 #![cfg_attr(not(feature = "std"), no_std)]
-#![doc = include_str!("../README.md")]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod decode;
-pub mod text;
+mod guard_input;
+mod types;
 
-#[cfg(feature = "nosql")]
-pub mod nosql;
-
-#[cfg(feature = "binary")]
-pub mod binary;
-
-// Convenience re-exports for the most common functions
+pub use guard_input::GuardInput;
 #[cfg(feature = "alloc")]
-pub use text::tsv::tsv_safe;
-#[cfg(feature = "alloc")]
-pub use text::csv::{csv_field, has_formula_prefix};
-#[cfg(feature = "alloc")]
-pub use text::json::{jsonl_safe, has_jsonl_line_break};
-#[cfg(feature = "alloc")]
-pub use text::display::{display_safe, cap_display};
-#[cfg(feature = "alloc")]
-pub use decode::{DecodedStr, bytes_to_utf8_lossy_safe};
+pub use types::{DecodedStr, Guarded};
 ```
 
-### README.md (skeleton)
-
-Create `README.md` with:
-- One-paragraph description
-- Feature table (default/alloc/nosql/binary/full)
-- Quick-start example for each format
-- Threat model section (what each function guards against and what it does NOT guard against)
-- "Engineering decisions" section documenting tab→space Volatility3 convention and formula-injection prefix choice
-
-### Commit
+### Step 5: Run tests — confirm GREEN
 
 ```bash
-git add src/lib.rs README.md
-git commit --no-gpg-sign -m "docs: public API re-exports + README skeleton"
+cd ~/src/jsonguard && cargo test 2>&1
+```
+
+Expected: all tests pass.
+
+### Step 6: Commit GREEN
+
+```bash
+git add src/lib.rs src/guard_input.rs src/types.rs
+git commit -m "feat(core): GREEN — GuardInput sealed trait, Guarded, DecodedStr"
 ```
 
 ---
 
-## Task 13: Wire into `memory-forensic`
+## Task 2: `bytes_to_utf8_lossy_safe`
 
-After `jsonguard` is working, add it to the memory-forensic workspace and replace the local CSV arm sanitization.
+This is the explicit decode function — for callers who want to decode bytes and inspect the result before sanitizing, rather than having it happen inside a sanitizer.
 
-### Files
-- Modify: `/Users/4n6h4x0r/src/memory-forensic/Cargo.toml` (workspace.dependencies + memf dependencies)
-- Modify: `/Users/4n6h4x0r/src/memory-forensic/src/main.rs` (Csv arm, add `use jsonguard::{csv_field, tsv_safe}`)
+**Files:**
+- Create: `src/text.rs`
+- Modify: `src/lib.rs`
 
-### Steps
+### Step 1: Write failing tests (RED)
 
-1. Add to workspace deps:
-   ```toml
-   # In memory-forensic/Cargo.toml [workspace.dependencies]
-   jsonguard = { path = "../jsonguard" }
-   ```
+Create `src/text.rs`:
 
-2. Add to memf binary deps:
-   ```toml
-   jsonguard.workspace = true
-   ```
+```rust
+#[cfg(feature = "alloc")]
+use alloc::string::String;
+use crate::types::DecodedStr;
 
-3. In `src/main.rs`, add import:
-   ```rust
-   use jsonguard::{csv_field, display_safe};
-   ```
+// Implementation goes here after RED commit
 
-4. Find every `OutputFormat::Csv` arm and replace raw `d.name` interpolation with `csv_field(&d.name)` and `csv_field(&d.path)`. The known broken arm is `print_windows_drivers` — audit all other `Csv` arms too.
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-5. Run `cargo test --bin memf` — all 128 tests must still pass.
+    #[test]
+    fn decode_valid_utf8_not_lossy() {
+        let d = bytes_to_utf8_lossy_safe(b"hello");
+        assert_eq!(d.text, "hello");
+        assert!(!d.lossy);
+    }
 
-6. Commit:
-   ```bash
-   git add Cargo.toml src/main.rs
-   git commit --no-gpg-sign -m "feat: wire jsonguard into memf — fix broken Csv arm sanitization"
-   ```
+    #[test]
+    fn decode_invalid_utf8_lossy() {
+        let d = bytes_to_utf8_lossy_safe(b"\xFF\x80");
+        assert!(d.lossy);
+        assert!(d.text.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn decode_empty_bytes() {
+        let d = bytes_to_utf8_lossy_safe(b"");
+        assert_eq!(d.text, "");
+        assert!(!d.lossy);
+    }
+
+    #[test]
+    fn decode_valid_unicode() {
+        // 許 in UTF-8 is 0xE8 0xA8 0xB1 (not 0xB3 0x5C Big5)
+        let d = bytes_to_utf8_lossy_safe("許功蓋".as_bytes());
+        assert_eq!(d.text, "許功蓋");
+        assert!(!d.lossy);
+    }
+
+    #[test]
+    fn decode_big5_bytes_are_lossy() {
+        // Big5 encoded 許 = 0xB3 0x5C — not valid UTF-8
+        let d = bytes_to_utf8_lossy_safe(b"\xB3\x5C\xA6\x5C");
+        assert!(d.lossy);
+    }
+
+    #[test]
+    fn decode_display_works() {
+        let d = bytes_to_utf8_lossy_safe(b"hello");
+        assert_eq!(d.to_string(), "hello");
+    }
+}
+```
+
+Declare the module in `src/lib.rs`:
+
+```rust
+mod text;
+pub use text::bytes_to_utf8_lossy_safe;
+```
+
+### Step 2: Run tests — confirm RED
+
+```bash
+cd ~/src/jsonguard && cargo test text::tests 2>&1
+```
+
+Expected: compile error — `bytes_to_utf8_lossy_safe` not found.
+
+### Step 3: Commit RED
+
+```bash
+git add src/text.rs src/lib.rs
+git commit -m "test(text): RED — bytes_to_utf8_lossy_safe tests"
+```
+
+### Step 4: Implement (GREEN)
+
+Add to `src/text.rs` (before the test module):
+
+```rust
+#[cfg(feature = "alloc")]
+pub fn bytes_to_utf8_lossy_safe(bytes: &[u8]) -> DecodedStr {
+    use alloc::borrow::Cow;
+    let cow = String::from_utf8_lossy(bytes);
+    let lossy = matches!(cow, Cow::Owned(_));
+    DecodedStr {
+        text: cow.into_owned(),
+        lossy,
+    }
+}
+```
+
+### Step 5: Run tests — confirm GREEN
+
+```bash
+cd ~/src/jsonguard && cargo test text::tests::decode 2>&1
+```
+
+Expected: 6 tests pass.
+
+### Step 6: Commit GREEN
+
+```bash
+git add src/text.rs src/lib.rs
+git commit -m "feat(text): GREEN — bytes_to_utf8_lossy_safe"
+```
 
 ---
 
-## Execution
+## Task 3: `display_safe` and `cap_display`
 
-Plan complete and saved to `docs/plans/2026-05-21-jsonguard-v0.1.md`.
+These sanitize text for general display — strip control characters and bidi override characters. Safe for logging, UI output, terminal display.
 
-**Two execution options:**
+**Files:**
+- Modify: `src/text.rs`
+- Modify: `src/lib.rs`
 
-**1. Subagent-Driven (this session)** — I dispatch a fresh subagent per task, with spec + code quality review between tasks. Fast iteration, stays in this session.
+### Bidi control characters to strip
 
-**2. Parallel Session (separate)** — Open a new Claude Code session in `~/src/jsonguard`, run `/pickup` then `superpowers:executing-plans`. Lets this session stay focused on memory-forensic.
+The following Unicode codepoints are stripped by `display_safe` and `cap_display`:
 
-**Which approach?**
+| Codepoint(s) | Name |
+|---|---|
+| U+0000-U+001F | C0 control characters |
+| U+007F | DELETE |
+| U+0080-U+009F | C1 control characters |
+| U+200E | LEFT-TO-RIGHT MARK |
+| U+200F | RIGHT-TO-LEFT MARK |
+| U+202A-U+202E | LRE, RLE, PDF, LRO, RLO |
+| U+2066-U+2069 | LRI, RLI, FSI, PDI |
+| U+061C | ARABIC LETTER MARK |
+
+Define this predicate internally (not public):
+```rust
+fn is_display_unsafe(c: char) -> bool {
+    matches!(c,
+        '\u{0000}'..='\u{001F}'
+        | '\u{007F}'
+        | '\u{0080}'..='\u{009F}'
+        | '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{061C}'
+    )
+}
+```
+
+### Step 1: Write failing tests (RED)
+
+Add to `src/text.rs` test module:
+
+```rust
+    // display_safe tests
+    #[test]
+    fn display_safe_passthrough_normal_text() {
+        let g = display_safe("hello world");
+        assert_eq!(g.to_string(), "hello world");
+        assert!(!g.lossy);
+    }
+
+    #[test]
+    fn display_safe_strips_null_byte() {
+        let g = display_safe("hel\x00lo");
+        assert_eq!(g.to_string(), "hello");
+    }
+
+    #[test]
+    fn display_safe_strips_c0_controls() {
+        let g = display_safe("a\x01b\x1Fc");
+        assert_eq!(g.to_string(), "abc");
+    }
+
+    #[test]
+    fn display_safe_strips_bidi_rlo() {
+        // U+202E is RIGHT-TO-LEFT OVERRIDE
+        let g = display_safe("hello\u{202E}world");
+        assert_eq!(g.to_string(), "helloworld");
+    }
+
+    #[test]
+    fn display_safe_strips_c1_controls() {
+        // U+0085 is NEXT LINE (a C1 control)
+        let g = display_safe("a\u{0085}b");
+        assert_eq!(g.to_string(), "ab");
+    }
+
+    #[test]
+    fn display_safe_preserves_unicode_text() {
+        let g = display_safe("許功蓋 Ünïcödé");
+        assert_eq!(g.to_string(), "許功蓋 Ünïcödé");
+    }
+
+    #[test]
+    fn display_safe_bytes_input_invalid_utf8_lossy() {
+        let g = display_safe(b"\xFF\xFE hello".as_ref());
+        assert!(g.lossy);
+        assert!(g.to_string().contains("hello"));
+    }
+
+    // cap_display tests
+    #[test]
+    fn cap_display_passthrough_short_text() {
+        let g = cap_display("hi", 10);
+        assert_eq!(g.to_string(), "hi");
+    }
+
+    #[test]
+    fn cap_display_truncates_at_char_boundary() {
+        // "hello world" is 11 chars; cap at 5 = "hello..."
+        let g = cap_display("hello world", 5);
+        assert_eq!(g.to_string(), "hello\u{2026}");
+    }
+
+    #[test]
+    fn cap_display_strips_unsafe_before_counting() {
+        // Bidi char is stripped; the 3-char limit counts safe chars only
+        let g = cap_display("ab\u{202E}cd", 3);
+        assert_eq!(g.to_string(), "abc\u{2026}");
+    }
+
+    #[test]
+    fn cap_display_exact_length_no_ellipsis() {
+        let g = cap_display("hello", 5);
+        assert_eq!(g.to_string(), "hello");
+    }
+
+    #[test]
+    fn cap_display_zero_limit() {
+        let g = cap_display("hello", 0);
+        assert_eq!(g.to_string(), "\u{2026}");
+    }
+```
+
+### Step 2: Run tests — confirm RED
+
+```bash
+cd ~/src/jsonguard && cargo test 2>&1
+```
+
+Expected: compile error — `display_safe` and `cap_display` not defined.
+
+### Step 3: Commit RED
+
+```bash
+git add src/text.rs
+git commit -m "test(text): RED — display_safe and cap_display tests"
+```
+
+### Step 4: Implement (GREEN)
+
+Add to `src/text.rs`:
+
+```rust
+fn is_display_unsafe(c: char) -> bool {
+    matches!(c,
+        '\u{0000}'..='\u{001F}'
+        | '\u{007F}'
+        | '\u{0080}'..='\u{009F}'
+        | '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{061C}'
+    )
+}
+
+#[cfg(feature = "alloc")]
+pub fn display_safe<I: crate::guard_input::GuardInput>(input: I) -> crate::types::Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+    let value: String = text.chars().filter(|&c| !is_display_unsafe(c)).collect();
+    crate::types::Guarded { value, lossy }
+}
+
+#[cfg(feature = "alloc")]
+pub fn cap_display<I: crate::guard_input::GuardInput>(
+    input: I,
+    max_chars: usize,
+) -> crate::types::Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+    let safe: String = text.chars().filter(|&c| !is_display_unsafe(c)).collect();
+    let value = if safe.chars().count() > max_chars {
+        let truncated: String = safe.chars().take(max_chars).collect();
+        alloc::format!("{}\u{2026}", truncated)
+    } else {
+        safe
+    };
+    crate::types::Guarded { value, lossy }
+}
+```
+
+Update `src/lib.rs` re-exports:
+
+```rust
+pub use text::{bytes_to_utf8_lossy_safe, cap_display, display_safe};
+```
+
+### Step 5: Run tests — confirm GREEN
+
+```bash
+cd ~/src/jsonguard && cargo test 2>&1
+```
+
+Expected: all tests pass.
+
+### Step 6: Commit GREEN
+
+```bash
+git add src/text.rs src/lib.rs
+git commit -m "feat(text): GREEN — display_safe and cap_display"
+```
+
+---
+
+## Task 4: `tsv_safe`
+
+TSV (Tab-Separated Values) has no quoting mechanism. Any TAB in a field value shifts subsequent columns. Any CR or LF starts a new row. Formula injection applies to fields that begin with `= + - @`.
+
+**Sanitization rules for `tsv_safe`:**
+1. Replace TAB (`\t`, U+0009) with space
+2. Replace LF (`\n`, U+000A) with space
+3. Replace CR (`\r`, U+000D) with space
+4. Strip all other C0 controls (U+0000-U+0008, U+000B, U+000C, U+000E-U+001F)
+5. Strip DEL (U+007F)
+6. Strip C1 controls (U+0080-U+009F)
+7. Strip bidi control characters (same set as `is_display_unsafe`)
+8. If the cleaned field starts with `=`, `+`, `-`, or `@`, prepend `'` (formula injection guard)
+
+Note: Steps 1-3 replace structural chars with space rather than stripping them, to preserve word boundaries.
+
+**Files:**
+- Modify: `src/text.rs`
+- Modify: `src/lib.rs`
+
+### Step 1: Write failing tests (RED)
+
+Add to `src/text.rs` test module:
+
+```rust
+    // tsv_safe tests
+    #[test]
+    fn tsv_safe_passthrough_normal() {
+        let g = tsv_safe("hello world");
+        assert_eq!(g.to_string(), "hello world");
+        assert!(!g.lossy);
+    }
+
+    #[test]
+    fn tsv_safe_replaces_tab_with_space() {
+        let g = tsv_safe("col1\tcol2");
+        assert_eq!(g.to_string(), "col1 col2");
+    }
+
+    #[test]
+    fn tsv_safe_replaces_lf_with_space() {
+        let g = tsv_safe("line1\nline2");
+        assert_eq!(g.to_string(), "line1 line2");
+    }
+
+    #[test]
+    fn tsv_safe_replaces_crlf_with_spaces() {
+        let g = tsv_safe("row1\r\nrow2");
+        assert_eq!(g.to_string(), "row1  row2"); // CR and LF each become space
+    }
+
+    #[test]
+    fn tsv_safe_formula_injection_equals() {
+        let g = tsv_safe("=SUM(A1:A10)");
+        assert_eq!(g.to_string(), "'=SUM(A1:A10)");
+    }
+
+    #[test]
+    fn tsv_safe_formula_injection_plus() {
+        let g = tsv_safe("+1234");
+        assert_eq!(g.to_string(), "'+1234");
+    }
+
+    #[test]
+    fn tsv_safe_formula_injection_minus() {
+        let g = tsv_safe("-1234");
+        assert_eq!(g.to_string(), "'-1234");
+    }
+
+    #[test]
+    fn tsv_safe_formula_injection_at() {
+        let g = tsv_safe("@SUM");
+        assert_eq!(g.to_string(), "'@SUM");
+    }
+
+    #[test]
+    fn tsv_safe_no_formula_guard_midstring() {
+        // A formula char NOT at the start is fine
+        let g = tsv_safe("value=something");
+        assert_eq!(g.to_string(), "value=something");
+    }
+
+    #[test]
+    fn tsv_safe_strips_bidi_override() {
+        let g = tsv_safe("hello\u{202E}world");
+        assert_eq!(g.to_string(), "helloworld");
+    }
+
+    #[test]
+    fn tsv_safe_strips_c0_nontab() {
+        // \x01 is a C0 control (not tab/LF/CR) — should be stripped
+        let g = tsv_safe("a\x01b");
+        assert_eq!(g.to_string(), "ab");
+    }
+
+    #[test]
+    fn tsv_safe_bytes_input() {
+        let g = tsv_safe(b"=SUM\tval".as_ref());
+        assert_eq!(g.to_string(), "'=SUM val");
+        assert!(!g.lossy);
+    }
+
+    #[test]
+    fn tsv_safe_bytes_invalid_utf8_lossy_with_formula_guard() {
+        let g = tsv_safe(b"=\xFF".as_ref());
+        assert!(g.to_string().starts_with("'="));
+        assert!(g.lossy);
+    }
+
+    #[test]
+    fn tsv_safe_unicode_preserved() {
+        let g = tsv_safe("許功蓋");
+        assert_eq!(g.to_string(), "許功蓋");
+        assert!(!g.lossy);
+    }
+```
+
+### Step 2: Run tests — confirm RED
+
+```bash
+cd ~/src/jsonguard && cargo test 'text::tests::tsv_safe' 2>&1
+```
+
+Expected: compile error — `tsv_safe` not defined.
+
+### Step 3: Commit RED
+
+```bash
+git add src/text.rs
+git commit -m "test(text): RED — tsv_safe tests"
+```
+
+### Step 4: Implement (GREEN)
+
+Add to `src/text.rs`:
+
+```rust
+#[cfg(feature = "alloc")]
+pub fn tsv_safe<I: crate::guard_input::GuardInput>(input: I) -> crate::types::Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+
+    let cleaned: String = text.chars().filter_map(|c| match c {
+        '\t' | '\n' | '\r' => Some(' '),
+        c if is_display_unsafe(c) => None,
+        c => Some(c),
+    }).collect();
+
+    let value = match cleaned.chars().next() {
+        Some('=' | '+' | '-' | '@') => alloc::format!("'{}", cleaned),
+        _ => cleaned,
+    };
+
+    crate::types::Guarded { value, lossy }
+}
+```
+
+Update `src/lib.rs` re-exports:
+
+```rust
+pub use text::{bytes_to_utf8_lossy_safe, cap_display, display_safe, tsv_safe};
+```
+
+### Step 5: Run tests — confirm GREEN
+
+```bash
+cd ~/src/jsonguard && cargo test 2>&1
+```
+
+Expected: all tests pass.
+
+### Step 6: Commit GREEN
+
+```bash
+git add src/text.rs src/lib.rs
+git commit -m "feat(text): GREEN — tsv_safe"
+```
+
+---
+
+## Task 5: `csv_field`
+
+CSV (RFC 4180) uses comma as delimiter, double-quote for quoting, and CRLF for row boundaries.
+
+**RFC 4180 quoting rules:**
+- A field containing `,`, `"`, `\n`, or `\r` MUST be wrapped in double quotes
+- A `"` inside a quoted field is escaped by doubling it: `"` -> `""`
+- A field with no special characters can be output bare
+
+**Additional guards (beyond RFC 4180):**
+- Formula injection: if the decoded field (after bidi/control stripping) starts with `=`, `+`, `-`, or `@`, prepend `'`
+- Bidi controls: strip before processing
+- C0/C1 controls (except `\n` and `\r` which trigger quoting): strip
+- The `'` formula guard is applied before RFC 4180 quoting
+
+**Output examples:**
+
+| Input | Output |
+|---|---|
+| `hello` | `hello` |
+| `hello, world` | `"hello, world"` |
+| `say "hi"` | `"say ""hi"""` |
+| `=SUM(A1)` | `'=SUM(A1)` |
+| `=SUM(A1), ok` | `"'=SUM(A1), ok"` |
+| `line1\nline2` | `"line1\nline2"` (quoted, LF preserved) |
+
+Note: Unlike TSV, CSV preserves newlines in fields by quoting them. The newline is NOT replaced with space.
+
+**Files:**
+- Modify: `src/text.rs`
+- Modify: `src/lib.rs`
+
+### Step 1: Write failing tests (RED)
+
+Add to `src/text.rs` test module:
+
+```rust
+    // csv_field tests
+    #[test]
+    fn csv_field_passthrough_simple() {
+        let g = csv_field("hello");
+        assert_eq!(g.to_string(), "hello");
+        assert!(!g.lossy);
+    }
+
+    #[test]
+    fn csv_field_quotes_comma() {
+        let g = csv_field("hello, world");
+        assert_eq!(g.to_string(), r#""hello, world""#);
+    }
+
+    #[test]
+    fn csv_field_doubles_internal_quotes() {
+        let g = csv_field(r#"say "hi""#);
+        assert_eq!(g.to_string(), r#""say ""hi"""#);
+    }
+
+    #[test]
+    fn csv_field_quotes_newline() {
+        let g = csv_field("line1\nline2");
+        assert_eq!(g.to_string(), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn csv_field_quotes_cr() {
+        let g = csv_field("line1\rline2");
+        assert_eq!(g.to_string(), "\"line1\rline2\"");
+    }
+
+    #[test]
+    fn csv_field_formula_injection_bare() {
+        // No comma — no quoting; just prefix '
+        let g = csv_field("=SUM(A1:A10)");
+        assert_eq!(g.to_string(), "'=SUM(A1:A10)");
+    }
+
+    #[test]
+    fn csv_field_formula_injection_with_comma() {
+        // Has comma — must be quoted; formula guard inside quotes
+        let g = csv_field("=SUM(A1), total");
+        assert_eq!(g.to_string(), r#""'=SUM(A1), total""#);
+    }
+
+    #[test]
+    fn csv_field_formula_plus() {
+        let g = csv_field("+1");
+        assert_eq!(g.to_string(), "'+1");
+    }
+
+    #[test]
+    fn csv_field_formula_minus() {
+        let g = csv_field("-1");
+        assert_eq!(g.to_string(), "'-1");
+    }
+
+    #[test]
+    fn csv_field_formula_at() {
+        let g = csv_field("@user");
+        assert_eq!(g.to_string(), "'@user");
+    }
+
+    #[test]
+    fn csv_field_strips_bidi() {
+        let g = csv_field("hello\u{202E}world");
+        assert_eq!(g.to_string(), "helloworld");
+    }
+
+    #[test]
+    fn csv_field_strips_c0_not_newline() {
+        // \x01 stripped; \n triggers quoting
+        let g = csv_field("a\x01b\nc");
+        assert_eq!(g.to_string(), "\"ab\nc\"");
+    }
+
+    #[test]
+    fn csv_field_obrien() {
+        // Single quote in field — no special treatment
+        let g = csv_field("O'Brien");
+        assert_eq!(g.to_string(), "O'Brien");
+    }
+
+    #[test]
+    fn csv_field_obrien_with_comma() {
+        let g = csv_field("O'Brien, Jr.");
+        assert_eq!(g.to_string(), r#""O'Brien, Jr.""#);
+    }
+
+    #[test]
+    fn csv_field_unicode_preserved() {
+        let g = csv_field("許功蓋");
+        assert_eq!(g.to_string(), "許功蓋");
+        assert!(!g.lossy);
+    }
+
+    #[test]
+    fn csv_field_bytes_invalid_utf8_lossy() {
+        let g = csv_field(b"\xFF\xFE hello".as_ref());
+        assert!(g.lossy);
+    }
+
+    #[test]
+    fn csv_field_empty_string() {
+        let g = csv_field("");
+        assert_eq!(g.to_string(), "");
+    }
+```
+
+### Step 2: Run tests — confirm RED
+
+```bash
+cd ~/src/jsonguard && cargo test 'text::tests::csv_field' 2>&1
+```
+
+Expected: compile error — `csv_field` not defined.
+
+### Step 3: Commit RED
+
+```bash
+git add src/text.rs
+git commit -m "test(text): RED — csv_field tests"
+```
+
+### Step 4: Implement (GREEN)
+
+Add to `src/text.rs`:
+
+```rust
+fn needs_csv_quoting(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, ',' | '"' | '\n' | '\r'))
+}
+
+#[cfg(feature = "alloc")]
+pub fn csv_field<I: crate::guard_input::GuardInput>(input: I) -> crate::types::Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+
+    // Strip bidi and C0/C1 controls; PRESERVE \n and \r (they trigger RFC 4180 quoting)
+    let cleaned: String = text.chars().filter(|&c| {
+        if matches!(c, '\n' | '\r') {
+            return true;
+        }
+        !is_display_unsafe(c)
+    }).collect();
+
+    // Apply formula injection guard before quoting decision
+    let guarded = match cleaned.chars().next() {
+        Some('=' | '+' | '-' | '@') => alloc::format!("'{}", cleaned),
+        _ => cleaned,
+    };
+
+    // Apply RFC 4180 quoting if needed
+    let value = if needs_csv_quoting(&guarded) {
+        let escaped = guarded.replace('"', "\"\"");
+        alloc::format!("\"{}\"", escaped)
+    } else {
+        guarded
+    };
+
+    crate::types::Guarded { value, lossy }
+}
+```
+
+Update `src/lib.rs` re-exports:
+
+```rust
+pub use text::{bytes_to_utf8_lossy_safe, cap_display, csv_field, display_safe, tsv_safe};
+```
+
+### Step 5: Run tests — confirm GREEN
+
+```bash
+cd ~/src/jsonguard && cargo test 2>&1
+```
+
+Expected: all tests pass.
+
+### Step 6: Commit GREEN
+
+```bash
+git add src/text.rs src/lib.rs
+git commit -m "feat(text): GREEN — csv_field"
+```
+
+---
+
+## Task 6: `jsonl_safe`
+
+JSON Lines (JSONL) format: one JSON value per line. `jsonl_safe` produces a valid JSON string value (with surrounding `"`) from arbitrary input.
+
+**JSON string escaping (RFC 8259):**
+
+| Character | Escape |
+|---|---|
+| `"` (U+0022) | `\"` |
+| `\` (U+005C) | `\\` |
+| U+0008 (BS) | `\b` |
+| U+0009 (HT) | `\t` |
+| U+000A (LF) | `\n` |
+| U+000C (FF) | `\f` |
+| U+000D (CR) | `\r` |
+| U+0000-U+0007, U+000B, U+000E-U+001F | `\uXXXX` |
+| U+007F-U+009F (DEL + C1 controls) | `\uXXXX` |
+| Bidi controls | `\uXXXX` (preserve value, escape for display safety) |
+
+Note: Unlike `display_safe`/`tsv_safe`, `jsonl_safe` does NOT strip bidi characters — it escapes them as `\uXXXX`. This preserves the data while making the bytes safe in the JSON wire format.
+
+**Output:** `"<escaped_value>"` — the surrounding double quotes are included. This is a complete JSON string literal, ready to be written to a JSONL stream.
+
+**Files:**
+- Modify: `src/text.rs`
+- Modify: `src/lib.rs`
+
+### Step 1: Write failing tests (RED)
+
+Add to `src/text.rs` test module:
+
+```rust
+    // jsonl_safe tests
+    #[test]
+    fn jsonl_safe_wraps_in_quotes() {
+        let g = jsonl_safe("hello");
+        assert_eq!(g.to_string(), r#""hello""#);
+        assert!(!g.lossy);
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_backslash() {
+        let g = jsonl_safe(r#"C:\Users\foo"#);
+        assert_eq!(g.to_string(), r#""C:\\Users\\foo""#);
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_double_quote() {
+        let g = jsonl_safe(r#"say "hi""#);
+        assert_eq!(g.to_string(), r#""say \"hi\"""#);
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_newline() {
+        let g = jsonl_safe("line1\nline2");
+        assert_eq!(g.to_string(), r#""line1\nline2""#);
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_tab() {
+        let g = jsonl_safe("col1\tcol2");
+        assert_eq!(g.to_string(), r#""col1\tcol2""#);
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_cr() {
+        let g = jsonl_safe("row\r");
+        assert_eq!(g.to_string(), r#""row\r""#);
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_c0_control_as_unicode() {
+        // U+0001 -> 
+        let g = jsonl_safe("\x01");
+        assert_eq!(g.to_string(), "\"\\u0001\"");
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_del_as_unicode() {
+        // U+007F DELETE
+        let g = jsonl_safe("\x7F");
+        assert_eq!(g.to_string(), "\"\\u007f\"");
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_c1_control_as_unicode() {
+        // U+0085 NEXT LINE
+        let g = jsonl_safe("\u{0085}");
+        assert_eq!(g.to_string(), "\"\\u0085\"");
+    }
+
+    #[test]
+    fn jsonl_safe_escapes_bidi_rlo_as_unicode() {
+        // U+202E RIGHT-TO-LEFT OVERRIDE — escaped as ‮, NOT stripped
+        let g = jsonl_safe("hello\u{202E}world");
+        assert_eq!(g.to_string(), "\"hello\\u202eworld\"");
+    }
+
+    #[test]
+    fn jsonl_safe_preserves_unicode_text() {
+        let g = jsonl_safe("許功蓋");
+        assert_eq!(g.to_string(), r#""許功蓋""#);
+        assert!(!g.lossy);
+    }
+
+    #[test]
+    fn jsonl_safe_bytes_big5_becomes_replacement_chars() {
+        // Big5 bytes decoded lossy BEFORE JSON escaping.
+        // 0x5C byte does NOT survive as a raw backslash.
+        let g = jsonl_safe(b"\xB3\x5C".as_ref());
+        assert!(g.lossy);
+        let s = g.to_string();
+        assert!(s.starts_with('"') && s.ends_with('"'),
+            "output must be a valid JSON string literal");
+        // Validate no bare backslash (every \ must start a valid escape sequence)
+        let inner = &s[1..s.len()-1];
+        let mut chars = inner.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                let next = chars.next().expect("backslash must be followed by escape char");
+                assert!(
+                    matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u'),
+                    "invalid escape sequence \\{}", next
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jsonl_safe_empty_string() {
+        let g = jsonl_safe("");
+        assert_eq!(g.to_string(), r#""""#);
+    }
+```
+
+### Step 2: Run tests — confirm RED
+
+```bash
+cd ~/src/jsonguard && cargo test 'text::tests::jsonl_safe' 2>&1
+```
+
+Expected: compile error — `jsonl_safe` not defined.
+
+### Step 3: Commit RED
+
+```bash
+git add src/text.rs
+git commit -m "test(text): RED — jsonl_safe tests"
+```
+
+### Step 4: Implement (GREEN)
+
+Add to `src/text.rs`:
+
+```rust
+fn is_bidi(c: char) -> bool {
+    matches!(c,
+        '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{061C}'
+    )
+}
+
+#[cfg(feature = "alloc")]
+pub fn jsonl_safe<I: crate::guard_input::GuardInput>(input: I) -> crate::types::Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\x08' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\x0C' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            // C0 controls (excluding the named ones above)
+            '\u{0000}'..='\u{0007}'
+            | '\u{000B}'
+            | '\u{000E}'..='\u{001F}' => {
+                let code = c as u32;
+                out.push_str(&alloc::format!("\\u{:04x}", code));
+            }
+            // DEL + C1 controls
+            '\u{007F}'..='\u{009F}' => {
+                let code = c as u32;
+                out.push_str(&alloc::format!("\\u{:04x}", code));
+            }
+            // Bidi controls — \uXXXX escape (not stripped)
+            c if is_bidi(c) => {
+                let code = c as u32;
+                out.push_str(&alloc::format!("\\u{:04x}", code));
+            }
+            c => out.push(c),
+        }
+    }
+
+    out.push('"');
+    crate::types::Guarded { value: out, lossy }
+}
+```
+
+Update `src/lib.rs` re-exports:
+
+```rust
+pub use text::{bytes_to_utf8_lossy_safe, cap_display, csv_field, display_safe, jsonl_safe, tsv_safe};
+```
+
+### Step 5: Run tests — confirm GREEN
+
+```bash
+cd ~/src/jsonguard && cargo test 2>&1
+```
+
+Expected: all tests pass.
+
+### Step 6: Commit GREEN
+
+```bash
+git add src/text.rs src/lib.rs
+git commit -m "feat(text): GREEN — jsonl_safe"
+```
+
+---
+
+## Final: Full test suite + clippy
+
+### Run everything
+
+```bash
+cd ~/src/jsonguard && cargo test && cargo clippy -- -D warnings 2>&1
+```
+
+Expected: all tests pass, no clippy warnings.
+
+### Final `src/lib.rs` state
+
+```rust
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+mod guard_input;
+mod types;
+mod text;
+
+pub use guard_input::GuardInput;
+#[cfg(feature = "alloc")]
+pub use types::{DecodedStr, Guarded};
+#[cfg(feature = "alloc")]
+pub use text::{
+    bytes_to_utf8_lossy_safe,
+    cap_display,
+    csv_field,
+    display_safe,
+    jsonl_safe,
+    tsv_safe,
+};
+```
+
+### Verify no_std compatibility
+
+```bash
+cd ~/src/jsonguard && cargo build --no-default-features 2>&1
+# Expected: compiles (no functions available, but crate compiles)
+
+cargo build --no-default-features --features alloc 2>&1
+# Expected: compiles with all functions available
+```
+
+---
+
+## Edge cases to validate manually after tests pass
+
+1. `csv_field("=cmd|'/C calc'!A0")` — Excel DDE injection — must start with `'`
+2. `jsonl_safe("\u{202E}TXET")` — must contain `\\u202e` not raw bidi char
+3. `tsv_safe("\t\t\t")` — must be `"   "` (three spaces)
+4. `csv_field("\"")` — single `"` — must be `"\"\""` (RFC 4180 doubled, wrapped)
+5. `cap_display("\u{202E}hello", 3)` — bidi stripped first, then `"hel\u{2026}"`
+6. `bytes_to_utf8_lossy_safe(b"\xED\xA0\x80")` — U+D800 surrogate, invalid UTF-8 — must be lossy
+
+---
+
+## Expected commit log (most recent first)
+
+```
+feat(text): GREEN — jsonl_safe
+test(text): RED — jsonl_safe tests
+feat(text): GREEN — csv_field
+test(text): RED — csv_field tests
+feat(text): GREEN — tsv_safe
+test(text): RED — tsv_safe tests
+feat(text): GREEN — display_safe and cap_display
+test(text): RED — display_safe and cap_display tests
+feat(text): GREEN — bytes_to_utf8_lossy_safe
+test(text): RED — bytes_to_utf8_lossy_safe tests
+feat(core): GREEN — GuardInput sealed trait, Guarded, DecodedStr
+test(core): RED — GuardInput trait and Guarded/DecodedStr type tests
+```
