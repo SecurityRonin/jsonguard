@@ -91,7 +91,6 @@ pub fn inspect<I: GuardInput>(input: I) -> Findings {
 #[cfg(test)]
 mod tests {
     use std::prelude::v1::*;
-    use std::vec;
     use super::*;
     use crate::types::ViolationKind;
 
