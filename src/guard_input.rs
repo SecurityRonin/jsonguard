@@ -6,6 +6,8 @@ mod private {
     impl Sealed for &str {}
     impl<'a> Sealed for &'a [u8] {}
     impl<'a, const N: usize> Sealed for &'a [u8; N] {}
+    #[cfg(feature = "alloc")]
+    impl<'a> Sealed for &'a alloc::string::String {}
 }
 
 pub trait GuardInput: private::Sealed {
@@ -26,6 +28,14 @@ impl GuardInput for &[u8] {
         let cow = String::from_utf8_lossy(self);
         let lossy = matches!(cow, Cow::Owned(_));
         (cow.into_owned(), lossy)
+    }
+}
+
+// Allows callers to pass `&my_string` where `my_string: String` directly.
+#[cfg(feature = "alloc")]
+impl GuardInput for &alloc::string::String {
+    fn as_utf8_lossy(&self) -> (String, bool) {
+        ((*self).clone(), false)
     }
 }
 
