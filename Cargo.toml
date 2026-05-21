@@ -1,11 +1,11 @@
 [package]
 name = "jsonguard"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Security Ronin Ltd"]
 license = "MIT"
-description = "Secure output sanitization for JSON/JSONL, CSV, and TSV — guards against injection, formula, bidi-override, and control-character attacks."
+description = "Input inspection and output sanitization for JSON/JSONL, CSV, and TSV — guards against formula injection, bidi-override, control-character, and encoding attacks."
 repository = "https://github.com/SecurityRonin/jsonguard"
 homepage = "https://github.com/SecurityRonin/jsonguard"
 documentation = "https://docs.rs/jsonguard"
@@ -26,3 +26,7 @@ full = ["std", "nosql", "binary"]
 
 [dev-dependencies]
 proptest = "1"
+
+[[test]]
+name = "real_world_samples"
+required-features = ["alloc"]

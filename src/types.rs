@@ -98,7 +98,7 @@ impl Findings {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use std::prelude::v1::*;
     use std::vec;

@@ -88,7 +88,7 @@ pub fn inspect<I: GuardInput>(input: I) -> Findings {
     Findings { violations, lossy }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use std::prelude::v1::*;
     use super::*;

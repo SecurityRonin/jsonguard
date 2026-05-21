@@ -5,26 +5,36 @@
 [![CI](https://github.com/SecurityRonin/jsonguard/actions/workflows/ci.yml/badge.svg)](https://github.com/SecurityRonin/jsonguard/actions/workflows/ci.yml)
 [![Sponsor](https://img.shields.io/badge/sponsor-h4x0r-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/h4x0r)
 
-Secure output sanitization for JSON/JSONL, CSV, and TSV. Guards against injection, formula, bidi-override, and control-character attacks — with a secure-by-default API that makes the safe path the only path.
+Input inspection and output sanitization for JSON/JSONL, CSV, and TSV. Guards against formula injection, bidi-override, control-character, and encoding attacks at both ends of the data pipeline — with a secure-by-default API that makes the safe path the only path.
 
 ## The Problem
 
-Emitting untrusted data into structured text formats is a minefield:
+Untrusted data is dangerous at both ends of a pipeline:
+
+**At ingestion** — you need to know what you're accepting before you store it or route it:
+
+| Pattern | Risk |
+|---------|------|
+| `=HYPERLINK(...)` arriving in a field | Stored formula executes when exported to CSV |
+| U+202E in a username | Display name reversed in UI — phishing vector |
+| `\xFF\xFE` bytes from an external source | Unvalidated bytes corrupt downstream JSON encoding |
+
+**At emission** — structured formats have strict encoding rules that raw strings violate:
 
 | Attack | Format | Example |
 |--------|--------|---------|
 | Formula injection | CSV/TSV | `=HYPERLINK("https://evil.example","click me")` |
-| JSON string injection | JSON | `hello"\n,"injected_key":"injected_value` |
+| JSON string injection | JSONL | `hello"\n,"injected_key":"injected_value` |
 | Bidi override | All | U+202E reverses displayed text |
 | Control characters | All | TAB/CR/LF breaks field boundaries |
-| CJKV encoding hazard | JSON | Big5 `許` has `0x5C` as second byte — triggers JSON `\` escape |
+| CJKV encoding hazard | JSONL | Big5 `許` has `0x5C` as second byte — triggers JSON `\` escape |
 | Unbalanced quotes | CSV | Raw `"` in a field breaks RFC 4180 parsers |
 
-Most crates handle one or two of these. `jsonguard` handles all of them, in every function, by default.
+Most crates address one end or one attack class. `jsonguard` covers both ends, all attack classes, by default.
 
 ## Secure by Default
 
-Every sanitizer in `jsonguard` accepts `&str` **or** `&[u8]`. Byte input is decoded through a safe UTF-8 lossy path before sanitization. There is no "call `decode()` first" footgun — the decode step is invisible and mandatory.
+Every function in `jsonguard` accepts `&str` **or** `&[u8]`. Byte input is decoded through a safe UTF-8 lossy path before inspection or sanitization. There is no "call `decode()` first" footgun — the decode step is invisible and mandatory.
 
 ```rust
 use jsonguard::{csv_field, tsv_safe, jsonl_safe};

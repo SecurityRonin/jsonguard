@@ -56,7 +56,7 @@ impl<const N: usize> GuardInput for &[u8; N] {
     fn raw_bytes(&self) -> Option<&[u8]> { Some(*self) }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use std::prelude::v1::*;
     use super::*;

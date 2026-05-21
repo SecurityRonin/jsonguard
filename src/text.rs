@@ -124,7 +124,7 @@ pub fn jsonl_safe<I: GuardInput>(input: I) -> Guarded {
     Guarded { value: out, lossy }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use std::prelude::v1::*;
     use super::*;
