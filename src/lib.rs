@@ -9,6 +9,7 @@ extern crate std;
 
 mod guard_input;
 mod types;
+mod text;
 
 pub use guard_input::GuardInput;
 #[cfg(feature = "alloc")]
