@@ -262,6 +262,21 @@ mod tests {
         assert!(!findings(vec![v(ViolationKind::InvalidUtf8, 0, None)]).is_csv_safe());
     }
 
+    #[test]
+    fn csv_safe_false_for_control_char_none() {
+        // char: None on ControlChar treated conservatively as unsafe (not \n or \r)
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 0, None)]).is_csv_safe());
+    }
+
+    #[test]
+    fn csv_safe_false_when_formula_alongside_permitted_newline() {
+        // mixed: \n is permitted but = is not — overall result must be false
+        assert!(!findings(vec![
+            v(ViolationKind::ControlChar, 5, Some('\n')),
+            v(ViolationKind::FormulaInjection, 0, Some('=')),
+        ]).is_csv_safe());
+    }
+
     // is_tsv_safe
     #[test]
     fn tsv_safe_clean_input() {
