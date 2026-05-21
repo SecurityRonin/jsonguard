@@ -1,0 +1,27 @@
+[package]
+name = "jsonguard"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+description = "Secure output sanitization for JSON/JSONL, CSV, TSV, MongoDB, Elasticsearch, Redis, BSON, and MessagePack — guards against injection, formula, bidi-override, and control-character attacks."
+repository = "https://github.com/SecurityRonin/jsonguard"
+homepage = "https://github.com/SecurityRonin/jsonguard"
+documentation = "https://docs.rs/jsonguard"
+keywords = ["json", "csv", "sanitize", "injection", "nosql"]
+categories = ["encoding", "text-processing", "parser-implementations"]
+readme = "README.md"
+
+# no_std compatible; alloc enables Cow/String APIs; std adds nothing yet.
+[features]
+default = ["alloc"]
+alloc = []           # Cow<'_, str> / String return types
+std = ["alloc"]      # std::error::Error impl, future Write impls
+nosql = ["alloc"]    # MongoDB, Elasticsearch, Redis helpers
+binary = ["alloc"]   # BSON, MessagePack, Protocol Buffers advisories
+full = ["std", "nosql", "binary"]
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
