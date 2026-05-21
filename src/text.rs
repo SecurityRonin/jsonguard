@@ -1,6 +1,126 @@
 #[cfg(feature = "alloc")]
 use alloc::string::String;
-use crate::types::DecodedStr;
+use crate::guard_input::GuardInput;
+use crate::types::{DecodedStr, Guarded};
+
+#[cfg(feature = "alloc")]
+pub fn bytes_to_utf8_lossy_safe(bytes: &[u8]) -> DecodedStr {
+    use alloc::borrow::Cow;
+    let cow = String::from_utf8_lossy(bytes);
+    let lossy = matches!(cow, Cow::Owned(_));
+    DecodedStr { text: cow.into_owned(), lossy }
+}
+
+fn is_display_unsafe(c: char) -> bool {
+    matches!(c,
+        '\u{0000}'..='\u{001F}'
+        | '\u{007F}'
+        | '\u{0080}'..='\u{009F}'
+        | '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{061C}'
+    )
+}
+
+fn is_bidi(c: char) -> bool {
+    matches!(c,
+        '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{061C}'
+    )
+}
+
+#[cfg(feature = "alloc")]
+pub fn display_safe<I: GuardInput>(input: I) -> Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+    let value: String = text.chars().filter(|&c| !is_display_unsafe(c)).collect();
+    Guarded { value, lossy }
+}
+
+#[cfg(feature = "alloc")]
+pub fn cap_display<I: GuardInput>(input: I, max_chars: usize) -> Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+    let safe: String = text.chars().filter(|&c| !is_display_unsafe(c)).collect();
+    let value = if safe.chars().count() > max_chars {
+        let truncated: String = safe.chars().take(max_chars).collect();
+        alloc::format!("{}\u{2026}", truncated)
+    } else {
+        safe
+    };
+    Guarded { value, lossy }
+}
+
+#[cfg(feature = "alloc")]
+pub fn tsv_safe<I: GuardInput>(input: I) -> Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+    let cleaned: String = text.chars().filter_map(|c| match c {
+        '\t' | '\n' | '\r' => Some(' '),
+        c if is_display_unsafe(c) => None,
+        c => Some(c),
+    }).collect();
+    let value = match cleaned.chars().next() {
+        Some('=' | '+' | '-' | '@') => alloc::format!("'{}", cleaned),
+        _ => cleaned,
+    };
+    Guarded { value, lossy }
+}
+
+fn needs_csv_quoting(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, ',' | '"' | '\n' | '\r'))
+}
+
+#[cfg(feature = "alloc")]
+pub fn csv_field<I: GuardInput>(input: I) -> Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+    // Preserve \n and \r (they trigger RFC 4180 quoting); strip everything else unsafe.
+    let cleaned: String = text.chars().filter(|&c| {
+        if matches!(c, '\n' | '\r') { return true; }
+        !is_display_unsafe(c)
+    }).collect();
+    let guarded = match cleaned.chars().next() {
+        Some('=' | '+' | '-' | '@') => alloc::format!("'{}", cleaned),
+        _ => cleaned,
+    };
+    let value = if needs_csv_quoting(&guarded) {
+        let escaped = guarded.replace('"', "\"\"");
+        alloc::format!("\"{}\"", escaped)
+    } else {
+        guarded
+    };
+    Guarded { value, lossy }
+}
+
+#[cfg(feature = "alloc")]
+pub fn jsonl_safe<I: GuardInput>(input: I) -> Guarded {
+    let (text, lossy) = input.as_utf8_lossy();
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"'     => out.push_str("\\\""),
+            '\\'    => out.push_str("\\\\"),
+            '\x08'  => out.push_str("\\b"),
+            '\t'    => out.push_str("\\t"),
+            '\n'    => out.push_str("\\n"),
+            '\x0C'  => out.push_str("\\f"),
+            '\r'    => out.push_str("\\r"),
+            '\u{0000}'..='\u{0007}' | '\u{000B}' | '\u{000E}'..='\u{001F}' => {
+                out.push_str(&alloc::format!("\\u{:04x}", c as u32));
+            }
+            '\u{007F}'..='\u{009F}' => {
+                out.push_str(&alloc::format!("\\u{:04x}", c as u32));
+            }
+            c if is_bidi(c) => {
+                out.push_str(&alloc::format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Guarded { value: out, lossy }
+}
 
 #[cfg(test)]
 mod tests {
@@ -222,8 +342,10 @@ mod tests {
 
     #[test]
     fn csv_field_doubles_internal_quotes() {
+        // say "hi" → each " doubled → "say ""hi""
+        // Raw string can't end with " inside r#"..."#, so use regular string escaping.
         let g = csv_field(r#"say "hi""#);
-        assert_eq!(g.to_string(), r#""say ""hi"""#);
+        assert_eq!(g.to_string(), "\"say \"\"hi\"\"\"");
     }
 
     #[test]
