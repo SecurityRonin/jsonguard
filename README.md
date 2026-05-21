@@ -145,6 +145,8 @@ pub struct Guarded {
 | Null bytes | ✓ strip |
 | UTF-8 overlong sequences and surrogates | ✓ lossy decode |
 
+**Validated against real-world attack corpora** — 50 Unicode Consortium bidi sequences (UCD 17.0.0), 7 OWASP formula injection payloads, Markus Kuhn's UTF-8 stress test (22 KB), and CJKV encoding hazards including Big5 `\xB3\x5C` and surrogate/overlong sequences. See [`docs/validation.md`](docs/validation.md) for sources and reproduction steps.
+
 ## Acknowledgements
 
 - [OWASP CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection) — formula injection documentation
