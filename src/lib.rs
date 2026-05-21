@@ -10,11 +10,13 @@ extern crate std;
 mod guard_input;
 mod types;
 mod text;
+#[cfg(feature = "alloc")]
+mod inspect;
 
 #[cfg(feature = "alloc")]
 pub use guard_input::GuardInput;
 #[cfg(feature = "alloc")]
-pub use types::{DecodedStr, Guarded};
+pub use types::{DecodedStr, Guarded, Findings, Violation, ViolationKind};
 #[cfg(feature = "alloc")]
 pub use text::{
     bytes_to_utf8_lossy_safe,
@@ -24,3 +26,5 @@ pub use text::{
     jsonl_safe,
     tsv_safe,
 };
+#[cfg(feature = "alloc")]
+pub use inspect::inspect;
