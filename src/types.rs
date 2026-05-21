@@ -27,6 +27,30 @@ impl core::fmt::Display for DecodedStr {
     }
 }
 
+#[cfg(feature = "alloc")]
+#[derive(Debug, PartialEq)]
+pub enum ViolationKind {
+    FormulaInjection,
+    BidiOverride,
+    ControlChar,
+    InvalidUtf8,
+}
+
+#[cfg(feature = "alloc")]
+#[derive(Debug, PartialEq)]
+pub struct Violation {
+    pub kind:        ViolationKind,
+    pub byte_offset: usize,
+    pub char:        Option<char>,
+}
+
+#[cfg(feature = "alloc")]
+#[derive(Debug)]
+pub struct Findings {
+    pub violations: alloc::vec::Vec<Violation>,
+    pub lossy:      bool,
+}
+
 #[cfg(test)]
 mod tests {
     use std::prelude::v1::*;
