@@ -5,7 +5,88 @@ use crate::guard_input::GuardInput;
 #[cfg(feature = "alloc")]
 use crate::types::{Findings, Violation, ViolationKind};
 
-// Implementation: see feat(inspect) GREEN commit
+#[cfg(feature = "alloc")]
+fn is_bidi(c: char) -> bool {
+    matches!(c,
+        '\u{200E}' | '\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{061C}'
+    )
+}
+
+#[cfg(feature = "alloc")]
+fn is_control_char(c: char) -> bool {
+    matches!(c,
+        '\u{0000}'..='\u{001F}'
+        | '\u{007F}'
+        | '\u{0080}'..='\u{009F}'
+    )
+}
+
+#[cfg(feature = "alloc")]
+pub fn inspect<I: GuardInput>(input: I) -> Findings {
+    let raw = input.raw_bytes();
+    let (text, lossy) = input.as_utf8_lossy();
+    let mut violations: Vec<Violation> = Vec::new();
+
+    // Detect invalid UTF-8 sequences with exact byte offsets from the original bytes.
+    // Only available for &[u8] input — raw_bytes() returns None for &str (always valid UTF-8).
+    if let Some(bytes) = raw {
+        let mut i = 0;
+        while i < bytes.len() {
+            match core::str::from_utf8(&bytes[i..]) {
+                Ok(_) => break,
+                Err(e) => {
+                    violations.push(Violation {
+                        kind: ViolationKind::InvalidUtf8,
+                        byte_offset: i + e.valid_up_to(),
+                        char: None,
+                    });
+                    i += e.valid_up_to();
+                    i += e.error_len().unwrap_or(bytes.len() - i);
+                }
+            }
+        }
+    }
+
+    // Scan decoded text for FormulaInjection, BidiOverride, ControlChar.
+    // byte_offset here is in the decoded string's coordinate space.
+    let mut byte_offset: usize = 0;
+    let mut first_char = true;
+
+    for ch in text.chars() {
+        if first_char {
+            first_char = false;
+            if matches!(ch, '=' | '+' | '-' | '@') {
+                violations.push(Violation {
+                    kind: ViolationKind::FormulaInjection,
+                    byte_offset,
+                    char: Some(ch),
+                });
+            }
+        }
+
+        if is_bidi(ch) {
+            violations.push(Violation {
+                kind: ViolationKind::BidiOverride,
+                byte_offset,
+                char: Some(ch),
+            });
+        } else if is_control_char(ch) {
+            violations.push(Violation {
+                kind: ViolationKind::ControlChar,
+                byte_offset,
+                char: Some(ch),
+            });
+        }
+
+        byte_offset += ch.len_utf8();
+    }
+
+    violations.sort_by_key(|v| v.byte_offset);
+    Findings { violations, lossy }
+}
 
 #[cfg(test)]
 mod tests {

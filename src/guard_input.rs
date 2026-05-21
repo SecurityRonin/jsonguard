@@ -13,6 +13,7 @@ mod private {
 #[cfg(feature = "alloc")]
 pub trait GuardInput: private::Sealed {
     fn as_utf8_lossy(&self) -> (String, bool);
+    fn raw_bytes(&self) -> Option<&[u8]>;
 }
 
 #[cfg(feature = "alloc")]
@@ -20,6 +21,7 @@ impl GuardInput for &str {
     fn as_utf8_lossy(&self) -> (String, bool) {
         (String::from(*self), false)
     }
+    fn raw_bytes(&self) -> Option<&[u8]> { None }
 }
 
 #[cfg(feature = "alloc")]
@@ -30,6 +32,7 @@ impl GuardInput for &[u8] {
         let lossy = matches!(cow, Cow::Owned(_));
         (cow.into_owned(), lossy)
     }
+    fn raw_bytes(&self) -> Option<&[u8]> { Some(*self) }
 }
 
 // Allows callers to pass `&my_string` where `my_string: String` directly.
@@ -38,6 +41,7 @@ impl GuardInput for &alloc::string::String {
     fn as_utf8_lossy(&self) -> (String, bool) {
         ((*self).clone(), false)
     }
+    fn raw_bytes(&self) -> Option<&[u8]> { None }
 }
 
 // Allows callers to pass `b"literal"` (which has type `&[u8; N]`) directly.
@@ -49,6 +53,7 @@ impl<const N: usize> GuardInput for &[u8; N] {
         let lossy = matches!(cow, Cow::Owned(_));
         (cow.into_owned(), lossy)
     }
+    fn raw_bytes(&self) -> Option<&[u8]> { Some(*self) }
 }
 
 #[cfg(test)]
