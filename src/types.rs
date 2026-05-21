@@ -200,4 +200,126 @@ mod tests {
     fn has_invalid_utf8_false() {
         assert!(!findings(vec![]).has_invalid_utf8());
     }
+
+    // is_csv_safe
+    #[test]
+    fn csv_safe_clean_input() {
+        assert!(findings(vec![]).is_csv_safe());
+    }
+
+    #[test]
+    fn csv_safe_false_for_formula() {
+        assert!(!findings(vec![v(ViolationKind::FormulaInjection, 0, Some('='))]).is_csv_safe());
+    }
+
+    #[test]
+    fn csv_safe_false_for_bidi() {
+        assert!(!findings(vec![v(ViolationKind::BidiOverride, 3, Some('\u{202E}'))]).is_csv_safe());
+    }
+
+    #[test]
+    fn csv_safe_false_for_null_control() {
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 0, Some('\0'))]).is_csv_safe());
+    }
+
+    #[test]
+    fn csv_safe_true_for_newline_control() {
+        // csv_field quotes fields with \n — it doesn't strip them
+        assert!(findings(vec![v(ViolationKind::ControlChar, 5, Some('\n'))]).is_csv_safe());
+    }
+
+    #[test]
+    fn csv_safe_true_for_cr_control() {
+        assert!(findings(vec![v(ViolationKind::ControlChar, 5, Some('\r'))]).is_csv_safe());
+    }
+
+    #[test]
+    fn csv_safe_false_for_invalid_utf8() {
+        assert!(!findings(vec![v(ViolationKind::InvalidUtf8, 0, None)]).is_csv_safe());
+    }
+
+    // is_tsv_safe
+    #[test]
+    fn tsv_safe_clean_input() {
+        assert!(findings(vec![]).is_tsv_safe());
+    }
+
+    #[test]
+    fn tsv_safe_false_for_formula() {
+        assert!(!findings(vec![v(ViolationKind::FormulaInjection, 0, Some('+'))]).is_tsv_safe());
+    }
+
+    #[test]
+    fn tsv_safe_false_for_newline() {
+        // TSV has no quoting — \n breaks row structure
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 5, Some('\n'))]).is_tsv_safe());
+    }
+
+    #[test]
+    fn tsv_safe_false_for_tab() {
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 3, Some('\t'))]).is_tsv_safe());
+    }
+
+    #[test]
+    fn tsv_safe_false_for_cr() {
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 3, Some('\r'))]).is_tsv_safe());
+    }
+
+    #[test]
+    fn tsv_safe_false_for_bidi() {
+        assert!(!findings(vec![v(ViolationKind::BidiOverride, 0, Some('\u{200E}'))]).is_tsv_safe());
+    }
+
+    // is_jsonl_safe
+    #[test]
+    fn jsonl_safe_clean_input() {
+        assert!(findings(vec![]).is_jsonl_safe());
+    }
+
+    #[test]
+    fn jsonl_safe_true_for_formula() {
+        // '=' has no meaning in a JSON string value
+        assert!(findings(vec![v(ViolationKind::FormulaInjection, 0, Some('='))]).is_jsonl_safe());
+    }
+
+    #[test]
+    fn jsonl_safe_false_for_bidi() {
+        assert!(!findings(vec![v(ViolationKind::BidiOverride, 5, Some('\u{202E}'))]).is_jsonl_safe());
+    }
+
+    #[test]
+    fn jsonl_safe_false_for_control() {
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 0, Some('\n'))]).is_jsonl_safe());
+    }
+
+    #[test]
+    fn jsonl_safe_false_for_invalid_utf8() {
+        assert!(!findings(vec![v(ViolationKind::InvalidUtf8, 0, None)]).is_jsonl_safe());
+    }
+
+    // is_display_safe
+    #[test]
+    fn display_safe_clean_input() {
+        assert!(findings(vec![]).is_display_safe());
+    }
+
+    #[test]
+    fn display_safe_true_for_formula() {
+        assert!(findings(vec![v(ViolationKind::FormulaInjection, 0, Some('@'))]).is_display_safe());
+    }
+
+    #[test]
+    fn display_safe_false_for_bidi() {
+        assert!(!findings(vec![v(ViolationKind::BidiOverride, 0, Some('\u{061C}'))]).is_display_safe());
+    }
+
+    #[test]
+    fn display_safe_false_for_control() {
+        assert!(!findings(vec![v(ViolationKind::ControlChar, 0, Some('\x7F'))]).is_display_safe());
+    }
+
+    #[test]
+    fn display_safe_false_for_invalid_utf8() {
+        assert!(!findings(vec![v(ViolationKind::InvalidUtf8, 0, None)]).is_display_safe());
+    }
 }
