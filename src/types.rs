@@ -72,6 +72,30 @@ impl Findings {
     pub fn has_invalid_utf8(&self) -> bool {
         self.violations.iter().any(|v| matches!(v.kind, ViolationKind::InvalidUtf8))
     }
+
+    pub fn is_csv_safe(&self) -> bool {
+        !self.violations.iter().any(|v| match &v.kind {
+            ViolationKind::FormulaInjection => true,
+            ViolationKind::BidiOverride     => true,
+            ViolationKind::InvalidUtf8      => true,
+            ViolationKind::ControlChar      => !matches!(v.char, Some('\n') | Some('\r')),
+        })
+    }
+
+    pub fn is_tsv_safe(&self) -> bool {
+        self.is_clean()
+    }
+
+    pub fn is_jsonl_safe(&self) -> bool {
+        !self.violations.iter().any(|v| matches!(
+            v.kind,
+            ViolationKind::BidiOverride | ViolationKind::ControlChar | ViolationKind::InvalidUtf8
+        ))
+    }
+
+    pub fn is_display_safe(&self) -> bool {
+        self.is_jsonl_safe()
+    }
 }
 
 #[cfg(test)]
