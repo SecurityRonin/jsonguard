@@ -199,4 +199,4 @@ if f.is_clean() {
 
 ---
 
-[Privacy Policy](https://securityronin.github.io/jsonguard/privacy/) · [Terms of Service](https://securityronin.github.io/jsonguard/terms/) · © 2026 Security Ronin Ltd
+[Privacy Policy](https://securityronin.com/privacy) · [Terms of Service](https://securityronin.com/terms) · © 2026 Security Ronin Ltd
