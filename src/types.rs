@@ -39,16 +39,16 @@ pub enum ViolationKind {
 #[cfg(feature = "alloc")]
 #[derive(Debug, PartialEq)]
 pub struct Violation {
-    pub kind:        ViolationKind,
+    pub kind: ViolationKind,
     pub byte_offset: usize,
-    pub char:        Option<char>,
+    pub char: Option<char>,
 }
 
 #[cfg(feature = "alloc")]
 #[derive(Debug)]
 pub struct Findings {
     pub violations: alloc::vec::Vec<Violation>,
-    pub lossy:      bool,
+    pub lossy: bool,
 }
 
 #[cfg(feature = "alloc")]
@@ -58,27 +58,35 @@ impl Findings {
     }
 
     pub fn has_formula(&self) -> bool {
-        self.violations.iter().any(|v| matches!(v.kind, ViolationKind::FormulaInjection))
+        self.violations
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKind::FormulaInjection))
     }
 
     pub fn has_bidi(&self) -> bool {
-        self.violations.iter().any(|v| matches!(v.kind, ViolationKind::BidiOverride))
+        self.violations
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKind::BidiOverride))
     }
 
     pub fn has_controls(&self) -> bool {
-        self.violations.iter().any(|v| matches!(v.kind, ViolationKind::ControlChar))
+        self.violations
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKind::ControlChar))
     }
 
     pub fn has_invalid_utf8(&self) -> bool {
-        self.violations.iter().any(|v| matches!(v.kind, ViolationKind::InvalidUtf8))
+        self.violations
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKind::InvalidUtf8))
     }
 
     pub fn is_csv_safe(&self) -> bool {
         !self.violations.iter().any(|v| match &v.kind {
             ViolationKind::FormulaInjection => true,
-            ViolationKind::BidiOverride     => true,
-            ViolationKind::InvalidUtf8      => true,
-            ViolationKind::ControlChar      => !matches!(v.char, Some('\n') | Some('\r')),
+            ViolationKind::BidiOverride => true,
+            ViolationKind::InvalidUtf8 => true,
+            ViolationKind::ControlChar => !matches!(v.char, Some('\n') | Some('\r')),
         })
     }
 
@@ -87,10 +95,14 @@ impl Findings {
     }
 
     pub fn is_jsonl_safe(&self) -> bool {
-        !self.violations.iter().any(|v| matches!(
-            v.kind,
-            ViolationKind::BidiOverride | ViolationKind::ControlChar | ViolationKind::InvalidUtf8
-        ))
+        !self.violations.iter().any(|v| {
+            matches!(
+                v.kind,
+                ViolationKind::BidiOverride
+                    | ViolationKind::ControlChar
+                    | ViolationKind::InvalidUtf8
+            )
+        })
     }
 
     pub fn is_display_safe(&self) -> bool {
@@ -100,25 +112,34 @@ impl Findings {
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
+    use super::*;
     use std::prelude::v1::*;
     use std::vec;
-    use super::*;
 
     #[test]
     fn guarded_display_emits_value() {
-        let g = Guarded { value: "hello".to_string(), lossy: false };
+        let g = Guarded {
+            value: "hello".to_string(),
+            lossy: false,
+        };
         assert_eq!(g.to_string(), "hello");
     }
 
     #[test]
     fn guarded_lossy_flag_accessible() {
-        let g = Guarded { value: "x".to_string(), lossy: true };
+        let g = Guarded {
+            value: "x".to_string(),
+            lossy: true,
+        };
         assert!(g.lossy);
     }
 
     #[test]
     fn decoded_str_display_emits_text() {
-        let d = DecodedStr { text: "world".to_string(), lossy: false };
+        let d = DecodedStr {
+            text: "world".to_string(),
+            lossy: false,
+        };
         assert_eq!(d.to_string(), "world");
     }
 
@@ -154,24 +175,37 @@ mod tests {
 
     #[test]
     fn findings_fields_accessible() {
-        let f = Findings { violations: Vec::new(), lossy: false };
+        let f = Findings {
+            violations: Vec::new(),
+            lossy: false,
+        };
         assert!(f.violations.is_empty());
         assert!(!f.lossy);
     }
 
     #[test]
     fn findings_lossy_flag() {
-        let f = Findings { violations: Vec::new(), lossy: true };
+        let f = Findings {
+            violations: Vec::new(),
+            lossy: true,
+        };
         assert!(f.lossy);
     }
 
     // Helper used across Tasks 2 and 3
     fn v(kind: ViolationKind, byte_offset: usize, ch: Option<char>) -> Violation {
-        Violation { kind, byte_offset, char: ch }
+        Violation {
+            kind,
+            byte_offset,
+            char: ch,
+        }
     }
 
     fn findings(vs: Vec<Violation>) -> Findings {
-        Findings { violations: vs, lossy: false }
+        Findings {
+            violations: vs,
+            lossy: false,
+        }
     }
 
     // Generic method tests
@@ -274,7 +308,8 @@ mod tests {
         assert!(!findings(vec![
             v(ViolationKind::ControlChar, 5, Some('\n')),
             v(ViolationKind::FormulaInjection, 0, Some('=')),
-        ]).is_csv_safe());
+        ])
+        .is_csv_safe());
     }
 
     // is_tsv_safe
@@ -323,7 +358,9 @@ mod tests {
 
     #[test]
     fn jsonl_safe_false_for_bidi() {
-        assert!(!findings(vec![v(ViolationKind::BidiOverride, 5, Some('\u{202E}'))]).is_jsonl_safe());
+        assert!(
+            !findings(vec![v(ViolationKind::BidiOverride, 5, Some('\u{202E}'))]).is_jsonl_safe()
+        );
     }
 
     #[test]
@@ -349,7 +386,9 @@ mod tests {
 
     #[test]
     fn display_safe_false_for_bidi() {
-        assert!(!findings(vec![v(ViolationKind::BidiOverride, 0, Some('\u{061C}'))]).is_display_safe());
+        assert!(
+            !findings(vec![v(ViolationKind::BidiOverride, 0, Some('\u{061C}'))]).is_display_safe()
+        );
     }
 
     #[test]

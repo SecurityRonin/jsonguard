@@ -1,16 +1,19 @@
 #[cfg(feature = "alloc")]
-use alloc::string::String;
-#[cfg(feature = "alloc")]
 use crate::guard_input::GuardInput;
 #[cfg(feature = "alloc")]
 use crate::types::{DecodedStr, Guarded};
+#[cfg(feature = "alloc")]
+use alloc::string::String;
 
 #[cfg(feature = "alloc")]
 pub fn bytes_to_utf8_lossy_safe(bytes: &[u8]) -> DecodedStr {
     use alloc::borrow::Cow;
     let cow = String::from_utf8_lossy(bytes);
     let lossy = matches!(cow, Cow::Owned(_));
-    DecodedStr { text: cow.into_owned(), lossy }
+    DecodedStr {
+        text: cow.into_owned(),
+        lossy,
+    }
 }
 
 fn is_display_unsafe(c: char) -> bool {
@@ -57,11 +60,14 @@ pub fn cap_display<I: GuardInput>(input: I, max_chars: usize) -> Guarded {
 #[cfg(feature = "alloc")]
 pub fn tsv_safe<I: GuardInput>(input: I) -> Guarded {
     let (text, lossy) = input.as_utf8_lossy();
-    let cleaned: String = text.chars().filter_map(|c| match c {
-        '\t' | '\n' | '\r' => Some(' '),
-        c if is_display_unsafe(c) => None,
-        c => Some(c),
-    }).collect();
+    let cleaned: String = text
+        .chars()
+        .filter_map(|c| match c {
+            '\t' | '\n' | '\r' => Some(' '),
+            c if is_display_unsafe(c) => None,
+            c => Some(c),
+        })
+        .collect();
     let value = match cleaned.chars().next() {
         Some('=' | '+' | '-' | '@') => alloc::format!("'{cleaned}"),
         _ => cleaned,
@@ -77,10 +83,15 @@ fn needs_csv_quoting(s: &str) -> bool {
 pub fn csv_field<I: GuardInput>(input: I) -> Guarded {
     let (text, lossy) = input.as_utf8_lossy();
     // Preserve \n and \r (they trigger RFC 4180 quoting); strip everything else unsafe.
-    let cleaned: String = text.chars().filter(|&c| {
-        if matches!(c, '\n' | '\r') { return true; }
-        !is_display_unsafe(c)
-    }).collect();
+    let cleaned: String = text
+        .chars()
+        .filter(|&c| {
+            if matches!(c, '\n' | '\r') {
+                return true;
+            }
+            !is_display_unsafe(c)
+        })
+        .collect();
     let guarded = match cleaned.chars().next() {
         Some('=' | '+' | '-' | '@') => alloc::format!("'{cleaned}"),
         _ => cleaned,
@@ -101,13 +112,13 @@ pub fn jsonl_safe<I: GuardInput>(input: I) -> Guarded {
     out.push('"');
     for c in text.chars() {
         match c {
-            '"'     => out.push_str("\\\""),
-            '\\'    => out.push_str("\\\\"),
-            '\x08'  => out.push_str("\\b"),
-            '\t'    => out.push_str("\\t"),
-            '\n'    => out.push_str("\\n"),
-            '\x0C'  => out.push_str("\\f"),
-            '\r'    => out.push_str("\\r"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\x08' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\x0C' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
             '\u{0000}'..='\u{0007}' | '\u{000B}' | '\u{000E}'..='\u{001F}' => {
                 out.push_str(&alloc::format!("\\u{:04x}", c as u32));
             }
@@ -126,8 +137,8 @@ pub fn jsonl_safe<I: GuardInput>(input: I) -> Guarded {
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
-    use std::prelude::v1::*;
     use super::*;
+    use std::prelude::v1::*;
 
     // bytes_to_utf8_lossy_safe
     #[test]
@@ -519,13 +530,17 @@ mod tests {
         let g = jsonl_safe(b"\xB3\x5C".as_ref());
         assert!(g.lossy);
         let s = g.to_string();
-        assert!(s.starts_with('"') && s.ends_with('"'),
-            "output must be a valid JSON string literal");
-        let inner = &s[1..s.len()-1];
+        assert!(
+            s.starts_with('"') && s.ends_with('"'),
+            "output must be a valid JSON string literal"
+        );
+        let inner = &s[1..s.len() - 1];
         let mut chars = inner.chars().peekable();
         while let Some(c) = chars.next() {
             if c == '\\' {
-                let next = chars.next().expect("backslash must be followed by escape char");
+                let next = chars
+                    .next()
+                    .expect("backslash must be followed by escape char");
                 assert!(
                     matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u'),
                     "invalid escape sequence \\{next}"

@@ -1,9 +1,9 @@
 #[cfg(feature = "alloc")]
-use alloc::vec::Vec;
-#[cfg(feature = "alloc")]
 use crate::guard_input::GuardInput;
 #[cfg(feature = "alloc")]
 use crate::types::{Findings, Violation, ViolationKind};
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 
 #[cfg(feature = "alloc")]
 fn is_bidi(c: char) -> bool {
@@ -90,9 +90,9 @@ pub fn inspect<I: GuardInput>(input: I) -> Findings {
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
-    use std::prelude::v1::*;
     use super::*;
     use crate::types::ViolationKind;
+    use std::prelude::v1::*;
 
     #[test]
     fn inspect_clean_str() {
@@ -112,7 +112,11 @@ mod tests {
     fn inspect_detects_formula_equals() {
         let f = inspect("=SUM(A1)");
         assert!(f.has_formula());
-        let v = f.violations.iter().find(|v| matches!(v.kind, ViolationKind::FormulaInjection)).unwrap();
+        let v = f
+            .violations
+            .iter()
+            .find(|v| matches!(v.kind, ViolationKind::FormulaInjection))
+            .unwrap();
         assert_eq!(v.byte_offset, 0);
         assert_eq!(v.char, Some('='));
     }
@@ -141,7 +145,11 @@ mod tests {
     fn inspect_detects_bidi_rlo() {
         let f = inspect("hello\u{202E}world");
         assert!(f.has_bidi());
-        let v = f.violations.iter().find(|v| matches!(v.kind, ViolationKind::BidiOverride)).unwrap();
+        let v = f
+            .violations
+            .iter()
+            .find(|v| matches!(v.kind, ViolationKind::BidiOverride))
+            .unwrap();
         assert_eq!(v.byte_offset, 5); // "hello" is 5 bytes
         assert_eq!(v.char, Some('\u{202E}'));
     }
@@ -160,7 +168,11 @@ mod tests {
     fn inspect_detects_null_byte() {
         let f = inspect("a\x00b");
         assert!(f.has_controls());
-        let v = f.violations.iter().find(|v| matches!(v.kind, ViolationKind::ControlChar)).unwrap();
+        let v = f
+            .violations
+            .iter()
+            .find(|v| matches!(v.kind, ViolationKind::ControlChar))
+            .unwrap();
         assert_eq!(v.byte_offset, 1);
         assert_eq!(v.char, Some('\0'));
     }
@@ -169,7 +181,11 @@ mod tests {
     fn inspect_detects_c0_control() {
         let f = inspect("a\x01b");
         assert!(f.has_controls());
-        let v = f.violations.iter().find(|v| matches!(v.kind, ViolationKind::ControlChar)).unwrap();
+        let v = f
+            .violations
+            .iter()
+            .find(|v| matches!(v.kind, ViolationKind::ControlChar))
+            .unwrap();
         assert_eq!(v.byte_offset, 1);
     }
 
@@ -188,7 +204,11 @@ mod tests {
     fn inspect_detects_newline_as_control() {
         let f = inspect("line1\nline2");
         assert!(f.has_controls());
-        let v = f.violations.iter().find(|v| matches!(v.kind, ViolationKind::ControlChar)).unwrap();
+        let v = f
+            .violations
+            .iter()
+            .find(|v| matches!(v.kind, ViolationKind::ControlChar))
+            .unwrap();
         assert_eq!(v.char, Some('\n'));
     }
 
@@ -202,7 +222,11 @@ mod tests {
         let f = inspect(b"\xFF\xFE hello".as_ref());
         assert!(f.has_invalid_utf8());
         assert!(f.lossy);
-        let v = f.violations.iter().find(|v| matches!(v.kind, ViolationKind::InvalidUtf8)).unwrap();
+        let v = f
+            .violations
+            .iter()
+            .find(|v| matches!(v.kind, ViolationKind::InvalidUtf8))
+            .unwrap();
         assert_eq!(v.byte_offset, 0);
         assert!(v.char.is_none());
     }
@@ -211,7 +235,9 @@ mod tests {
     fn inspect_bytes_multiple_invalid_sequences() {
         // Two separate invalid sequences
         let f = inspect(b"\xFF hello \xFE".as_ref());
-        let invalid: Vec<_> = f.violations.iter()
+        let invalid: Vec<_> = f
+            .violations
+            .iter()
             .filter(|v| matches!(v.kind, ViolationKind::InvalidUtf8))
             .collect();
         assert_eq!(invalid.len(), 2);

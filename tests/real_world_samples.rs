@@ -4,7 +4,7 @@
 //   Markus Kuhn UTF-8 stress test (https://www.cl.cam.ac.uk/~mgk25/ucs/examples/UTF-8-test.txt)
 //   OWASP CSV Injection (https://owasp.org/www-community/attacks/CSV_Injection)
 
-use jsonguard::{inspect, csv_field, tsv_safe, jsonl_safe, display_safe};
+use jsonguard::{csv_field, display_safe, inspect, jsonl_safe, tsv_safe};
 
 // ---------------------------------------------------------------------------
 // Bidi corpus — lines from BidiCharacterTest.txt that contain known bidi
@@ -26,15 +26,17 @@ mod bidi_corpus {
             .filter(|l| {
                 // Data line first field: space-separated hex codepoints
                 l.split(';').next().map_or(false, |cps| {
-                    cps.split_whitespace().any(|cp| {
-                        u32::from_str_radix(cp, 16).map_or(false, |n| n == 0x202E)
-                    })
+                    cps.split_whitespace()
+                        .any(|cp| u32::from_str_radix(cp, 16).map_or(false, |n| n == 0x202E))
                 })
             })
             .take(n)
             .map(|l| {
                 // Reconstruct a string from the codepoint sequence (first field).
-                l.split(';').next().unwrap_or("").split_whitespace()
+                l.split(';')
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
                     .filter_map(|cp| u32::from_str_radix(cp, 16).ok())
                     .filter_map(char::from_u32)
                     .collect()
@@ -45,28 +47,44 @@ mod bidi_corpus {
     #[test]
     fn bidi_char_test_loads() {
         // Sanity: file is present and non-trivial
-        assert!(BIDI_CHAR_TEST.len() > 1000,
-            "BidiCharacterTest.txt too small — download may have failed");
-        let data_lines = BIDI_CHAR_TEST.lines()
+        assert!(
+            BIDI_CHAR_TEST.len() > 1000,
+            "BidiCharacterTest.txt too small — download may have failed"
+        );
+        let data_lines = BIDI_CHAR_TEST
+            .lines()
             .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
             .count();
-        assert!(data_lines > 1000,
-            "expected >1000 data lines, got {data_lines}");
+        assert!(
+            data_lines > 1000,
+            "expected >1000 data lines, got {data_lines}"
+        );
     }
 
     #[test]
     fn inspect_detects_bidi_in_rlo_corpus_lines() {
         let lines = rlo_lines(50);
-        assert!(!lines.is_empty(),
-            "no U+202E lines found in BidiCharacterTest.txt");
+        assert!(
+            !lines.is_empty(),
+            "no U+202E lines found in BidiCharacterTest.txt"
+        );
         for line in &lines {
             let f = inspect(line.as_str());
-            assert!(f.has_bidi(),
-                "expected has_bidi() for corpus line containing U+202E: {:?}", line);
-            assert!(!f.is_csv_safe(),
-                "bidi-containing line must not be csv_safe: {:?}", line);
-            assert!(!f.is_display_safe(),
-                "bidi-containing line must not be display_safe: {:?}", line);
+            assert!(
+                f.has_bidi(),
+                "expected has_bidi() for corpus line containing U+202E: {:?}",
+                line
+            );
+            assert!(
+                !f.is_csv_safe(),
+                "bidi-containing line must not be csv_safe: {:?}",
+                line
+            );
+            assert!(
+                !f.is_display_safe(),
+                "bidi-containing line must not be display_safe: {:?}",
+                line
+            );
         }
     }
 
@@ -75,8 +93,11 @@ mod bidi_corpus {
         for line in rlo_lines(20) {
             let g = display_safe(line.as_str());
             // U+202E must not appear in sanitized output
-            assert!(!g.to_string().contains('\u{202E}'),
-                "display_safe must strip U+202E from: {:?}", line);
+            assert!(
+                !g.to_string().contains('\u{202E}'),
+                "display_safe must strip U+202E from: {:?}",
+                line
+            );
         }
     }
 
@@ -85,8 +106,11 @@ mod bidi_corpus {
         for line in rlo_lines(20) {
             let g = csv_field(line.as_str());
             let out = g.to_string();
-            assert!(!out.contains('\u{202E}'),
-                "csv_field must strip U+202E from: {:?}", line);
+            assert!(
+                !out.contains('\u{202E}'),
+                "csv_field must strip U+202E from: {:?}",
+                line
+            );
         }
     }
 
@@ -97,11 +121,15 @@ mod bidi_corpus {
             let g = jsonl_safe(line.as_str());
             let out = g.to_string();
             // Must not contain raw U+202E
-            assert!(!out.contains('\u{202E}'),
-                "jsonl_safe must not emit raw U+202E");
+            assert!(
+                !out.contains('\u{202E}'),
+                "jsonl_safe must not emit raw U+202E"
+            );
             // Must contain the Unicode escape sequence for RLO
-            assert!(out.contains("\\u202e"),
-                "jsonl_safe must escape U+202E as \\u202e, got: {out:?}");
+            assert!(
+                out.contains("\\u202e"),
+                "jsonl_safe must escape U+202E as \\u202e, got: {out:?}"
+            );
         }
     }
 
@@ -117,21 +145,29 @@ mod bidi_corpus {
     fn inspect_detects_bidi_in_all_attack_samples() {
         // All lines except the last two ("normal line…" / "file‎name.txt" with LRM, "user؜name"
         // with U+061C) are constructed with bidi controls.
-        let attack_lines: Vec<&str> = BIDI_SAMPLES.lines()
+        let attack_lines: Vec<&str> = BIDI_SAMPLES
+            .lines()
             .filter(|l| {
-                l.chars().any(|c| matches!(c,
-                    '\u{200E}' | '\u{200F}'
-                    | '\u{202A}'..='\u{202E}'
-                    | '\u{2066}'..='\u{2069}'
-                    | '\u{061C}'
-                ))
+                l.chars().any(|c| {
+                    matches!(c,
+                        '\u{200E}' | '\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{061C}'
+                    )
+                })
             })
             .collect();
-        assert!(!attack_lines.is_empty(),
-            "no bidi-containing lines found in bidi_samples.txt");
+        assert!(
+            !attack_lines.is_empty(),
+            "no bidi-containing lines found in bidi_samples.txt"
+        );
         for line in &attack_lines {
-            assert!(inspect(*line).has_bidi(),
-                "inspect must flag bidi in: {:?}", line);
+            assert!(
+                inspect(*line).has_bidi(),
+                "inspect must flag bidi in: {:?}",
+                line
+            );
         }
     }
 
@@ -142,12 +178,16 @@ mod bidi_corpus {
             let out = g.to_string();
             // None of the bidi codepoint set must appear in output
             for c in out.chars() {
-                assert!(!matches!(c,
-                    '\u{200E}' | '\u{200F}'
-                    | '\u{202A}'..='\u{202E}'
-                    | '\u{2066}'..='\u{2069}'
-                    | '\u{061C}'
-                ), "display_safe left bidi char U+{:04X} in: {out:?}", c as u32);
+                assert!(
+                    !matches!(c,
+                        '\u{200E}' | '\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{061C}'
+                    ),
+                    "display_safe left bidi char U+{:04X} in: {out:?}",
+                    c as u32
+                );
             }
         }
     }
@@ -168,15 +208,17 @@ mod formula_injection_corpus {
     // so we test it separately.
     fn formula_lines() -> impl Iterator<Item = &'static str> {
         FORMULA_CSV.lines().filter(|l| {
-            !l.trim().is_empty()
-                && l.starts_with(|c| matches!(c, '=' | '+' | '-' | '@'))
+            !l.trim().is_empty() && l.starts_with(|c| matches!(c, '=' | '+' | '-' | '@'))
         })
     }
 
     #[test]
     fn formula_csv_loads() {
         let count = FORMULA_CSV.lines().filter(|l| !l.trim().is_empty()).count();
-        assert!(count >= 7, "expected at least 7 formula injection samples, got {count}");
+        assert!(
+            count >= 7,
+            "expected at least 7 formula injection samples, got {count}"
+        );
     }
 
     #[test]
@@ -184,13 +226,20 @@ mod formula_injection_corpus {
         let mut checked = 0usize;
         for line in formula_lines() {
             let f = inspect(line);
-            assert!(f.has_formula(),
-                "inspect must flag formula injection for: {line:?}");
-            assert!(!f.is_csv_safe(),
-                "formula line must not pass is_csv_safe: {line:?}");
+            assert!(
+                f.has_formula(),
+                "inspect must flag formula injection for: {line:?}"
+            );
+            assert!(
+                !f.is_csv_safe(),
+                "formula line must not pass is_csv_safe: {line:?}"
+            );
             checked += 1;
         }
-        assert!(checked >= 6, "expected at least 6 formula-trigger lines, got {checked}");
+        assert!(
+            checked >= 6,
+            "expected at least 6 formula-trigger lines, got {checked}"
+        );
     }
 
     #[test]
@@ -202,17 +251,32 @@ mod formula_injection_corpus {
             // csv_field prepends '; RFC 4180 quoting wraps in " if comma present.
             // Either way the first non-quote char must not be = + - @.
             let first_content_char = out.trim_start_matches('"').chars().next();
-            assert_ne!(first_content_char, Some('='),
-                "csv_field must not emit raw '=' prefix for: {line:?}");
-            assert_ne!(first_content_char, Some('+'),
-                "csv_field must not emit raw '+' prefix for: {line:?}");
-            assert_ne!(first_content_char, Some('-'),
-                "csv_field must not emit raw '-' prefix for: {line:?}");
-            assert_ne!(first_content_char, Some('@'),
-                "csv_field must not emit raw '@' prefix for: {line:?}");
+            assert_ne!(
+                first_content_char,
+                Some('='),
+                "csv_field must not emit raw '=' prefix for: {line:?}"
+            );
+            assert_ne!(
+                first_content_char,
+                Some('+'),
+                "csv_field must not emit raw '+' prefix for: {line:?}"
+            );
+            assert_ne!(
+                first_content_char,
+                Some('-'),
+                "csv_field must not emit raw '-' prefix for: {line:?}"
+            );
+            assert_ne!(
+                first_content_char,
+                Some('@'),
+                "csv_field must not emit raw '@' prefix for: {line:?}"
+            );
             // csv_field guards with a leading apostrophe
-            assert_eq!(first_content_char, Some('\''),
-                "csv_field must guard formula line with leading \"'\": {line:?} → {out:?}");
+            assert_eq!(
+                first_content_char,
+                Some('\''),
+                "csv_field must guard formula line with leading \"'\": {line:?} → {out:?}"
+            );
         }
     }
 
@@ -222,12 +286,31 @@ mod formula_injection_corpus {
             let g = tsv_safe(line);
             let out = g.to_string();
             let first = out.chars().next();
-            assert_ne!(first, Some('='), "tsv_safe must not emit raw '=' for: {line:?}");
-            assert_ne!(first, Some('+'), "tsv_safe must not emit raw '+' for: {line:?}");
-            assert_ne!(first, Some('-'), "tsv_safe must not emit raw '-' for: {line:?}");
-            assert_ne!(first, Some('@'), "tsv_safe must not emit raw '@' for: {line:?}");
-            assert_eq!(first, Some('\''),
-                "tsv_safe must guard formula line with leading \"'\": {line:?} → {out:?}");
+            assert_ne!(
+                first,
+                Some('='),
+                "tsv_safe must not emit raw '=' for: {line:?}"
+            );
+            assert_ne!(
+                first,
+                Some('+'),
+                "tsv_safe must not emit raw '+' for: {line:?}"
+            );
+            assert_ne!(
+                first,
+                Some('-'),
+                "tsv_safe must not emit raw '-' for: {line:?}"
+            );
+            assert_ne!(
+                first,
+                Some('@'),
+                "tsv_safe must not emit raw '@' for: {line:?}"
+            );
+            assert_eq!(
+                first,
+                Some('\''),
+                "tsv_safe must guard formula line with leading \"'\": {line:?} → {out:?}"
+            );
         }
     }
 
@@ -237,13 +320,17 @@ mod formula_injection_corpus {
         // inspect must NOT flag FormulaInjection, and csv_field must NOT prepend '.
         let dde = r#"DDE("cmd","/C calc","__DDE_Remote")"#;
         let f = inspect(dde);
-        assert!(!f.has_formula(),
-            "DDE line must not be flagged as FormulaInjection (first char is 'D')");
+        assert!(
+            !f.has_formula(),
+            "DDE line must not be flagged as FormulaInjection (first char is 'D')"
+        );
         let g = csv_field(dde);
         // csv_field quotes because of internal commas and double-quotes
         let out = g.to_string();
-        assert!(!out.starts_with('\''),
-            "csv_field must not prepend apostrophe to DDE line: {out:?}");
+        assert!(
+            !out.starts_with('\''),
+            "csv_field must not prepend apostrophe to DDE line: {out:?}"
+        );
     }
 }
 
@@ -260,36 +347,46 @@ mod utf8_corpus {
 
     #[test]
     fn utf8_test_file_loads() {
-        assert!(UTF8_TEST_BYTES.len() > 10_000,
+        assert!(
+            UTF8_TEST_BYTES.len() > 10_000,
             "UTF-8-test.txt too small — download may have failed, got {} bytes",
-            UTF8_TEST_BYTES.len());
+            UTF8_TEST_BYTES.len()
+        );
     }
 
     #[test]
     fn inspect_reports_invalid_utf8_in_stress_test() {
         let f = inspect(UTF8_TEST_BYTES);
-        assert!(f.has_invalid_utf8(),
-            "inspect must report InvalidUtf8 for Kuhn's stress test file");
-        assert!(f.lossy,
-            "lossy flag must be set for invalid UTF-8 input");
+        assert!(
+            f.has_invalid_utf8(),
+            "inspect must report InvalidUtf8 for Kuhn's stress test file"
+        );
+        assert!(f.lossy, "lossy flag must be set for invalid UTF-8 input");
     }
 
     #[test]
     fn inspect_reports_multiple_invalid_sequences_in_stress_test() {
         let f = inspect(UTF8_TEST_BYTES);
-        let count = f.violations.iter()
+        let count = f
+            .violations
+            .iter()
             .filter(|v| matches!(v.kind, jsonguard::ViolationKind::InvalidUtf8))
             .count();
         // Kuhn's file has many distinct invalid sequences
-        assert!(count > 10,
-            "expected >10 distinct InvalidUtf8 violations, got {count}");
+        assert!(
+            count > 10,
+            "expected >10 distinct InvalidUtf8 violations, got {count}"
+        );
     }
 
     #[test]
     fn display_safe_handles_stress_test_file() {
         // display_safe must not panic on any input
         let g = display_safe(UTF8_TEST_BYTES);
-        assert!(g.lossy, "stress test contains invalid UTF-8 so lossy must be true");
+        assert!(
+            g.lossy,
+            "stress test contains invalid UTF-8 so lossy must be true"
+        );
         // The output must be valid UTF-8 (it is a Rust String)
         let _ = g.to_string(); // would panic if invalid
     }
@@ -298,14 +395,19 @@ mod utf8_corpus {
     fn jsonl_safe_produces_valid_json_string_for_stress_test() {
         let g = jsonl_safe(UTF8_TEST_BYTES);
         let out = g.to_string();
-        assert!(out.starts_with('"'), "jsonl_safe output must start with '\"'");
+        assert!(
+            out.starts_with('"'),
+            "jsonl_safe output must start with '\"'"
+        );
         assert!(out.ends_with('"'), "jsonl_safe output must end with '\"'");
         // Every backslash must be followed by a valid JSON escape character
-        let inner = &out[1..out.len()-1];
+        let inner = &out[1..out.len() - 1];
         let mut chars = inner.chars().peekable();
         while let Some(c) = chars.next() {
             if c == '\\' {
-                let next = chars.next().expect("backslash must be followed by escape char");
+                let next = chars
+                    .next()
+                    .expect("backslash must be followed by escape char");
                 assert!(
                     matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u'),
                     "invalid JSON escape \\{next} in jsonl_safe output"
@@ -331,22 +433,26 @@ mod encoding_hazards {
     // The hazard: naive code that splices these bytes into output without
     // re-validating produces a stray backslash.
 
-    const BIG5_XU: &[u8] = b"\xB3\x5C";   // Big5 許 — second byte is 0x5C = '\'
+    const BIG5_XU: &[u8] = b"\xB3\x5C"; // Big5 許 — second byte is 0x5C = '\'
     const GBK_SLASH: &[u8] = b"\xD0\xC2\x5C"; // 3-byte GBK sequence ending in 0x5C
 
     #[test]
     fn inspect_flags_big5_as_invalid_utf8() {
         let f = inspect(BIG5_XU);
-        assert!(f.has_invalid_utf8(),
-            "Big5 \\xB3\\x5C must be flagged as invalid UTF-8");
+        assert!(
+            f.has_invalid_utf8(),
+            "Big5 \\xB3\\x5C must be flagged as invalid UTF-8"
+        );
         assert!(f.lossy, "lossy must be set for Big5 bytes");
     }
 
     #[test]
     fn inspect_flags_gbk_as_invalid_utf8() {
         let f = inspect(GBK_SLASH);
-        assert!(f.has_invalid_utf8(),
-            "GBK sequence ending in \\x5C must be flagged as invalid UTF-8");
+        assert!(
+            f.has_invalid_utf8(),
+            "GBK sequence ending in \\x5C must be flagged as invalid UTF-8"
+        );
         assert!(f.lossy, "lossy must be set for GBK bytes");
     }
 
@@ -358,14 +464,18 @@ mod encoding_hazards {
         // MUST escape as "\\".
         let g = jsonl_safe(BIG5_XU);
         let out = g.to_string();
-        assert!(out.starts_with('"') && out.ends_with('"'),
-            "jsonl_safe must produce a JSON string literal");
-        let inner = &out[1..out.len()-1];
+        assert!(
+            out.starts_with('"') && out.ends_with('"'),
+            "jsonl_safe must produce a JSON string literal"
+        );
+        let inner = &out[1..out.len() - 1];
         // Walk the inner content and verify every backslash is a proper JSON escape
         let mut chars = inner.chars().peekable();
         while let Some(c) = chars.next() {
             if c == '\\' {
-                let next = chars.next().expect("backslash must be followed by escape char");
+                let next = chars
+                    .next()
+                    .expect("backslash must be followed by escape char");
                 assert!(
                     matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u'),
                     "raw unescaped backslash hazard in jsonl_safe output for Big5 bytes: {out:?}"
@@ -379,11 +489,13 @@ mod encoding_hazards {
     fn jsonl_safe_gbk_no_raw_backslash_hazard() {
         let g = jsonl_safe(GBK_SLASH);
         let out = g.to_string();
-        let inner = &out[1..out.len()-1];
+        let inner = &out[1..out.len() - 1];
         let mut chars = inner.chars().peekable();
         while let Some(c) = chars.next() {
             if c == '\\' {
-                let next = chars.next().expect("backslash must be followed by escape char");
+                let next = chars
+                    .next()
+                    .expect("backslash must be followed by escape char");
                 assert!(
                     matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u'),
                     "raw backslash hazard for GBK bytes: {out:?}"
@@ -403,8 +515,10 @@ mod encoding_hazards {
         // (backslash is not a display-unsafe char in its classifier).
         // The key assertion is that the field is properly enclosed/escaped such
         // that the lossy flag is set (caller is informed of decode failure).
-        assert!(g.lossy,
-            "csv_field must set lossy=true for Big5 input containing 0x5C");
+        assert!(
+            g.lossy,
+            "csv_field must set lossy=true for Big5 input containing 0x5C"
+        );
     }
 
     #[test]
@@ -426,7 +540,10 @@ mod encoding_hazards {
     fn inspect_overlong_nul_c0_80() {
         // 0xC0 0x80 — overlong encoding of U+0000 (rejected by RFC 3629)
         let f = inspect(b"\xC0\x80".as_ref());
-        assert!(f.has_invalid_utf8(), "\\xC0\\x80 (overlong NUL) must be invalid UTF-8");
+        assert!(
+            f.has_invalid_utf8(),
+            "\\xC0\\x80 (overlong NUL) must be invalid UTF-8"
+        );
         assert!(f.lossy);
     }
 
@@ -434,7 +551,10 @@ mod encoding_hazards {
     fn inspect_surrogate_ed_a0_80() {
         // 0xED 0xA0 0x80 — encodes U+D800 (surrogate, banned by RFC 3629)
         let f = inspect(b"\xED\xA0\x80".as_ref());
-        assert!(f.has_invalid_utf8(), "\\xED\\xA0\\x80 (surrogate U+D800) must be invalid UTF-8");
+        assert!(
+            f.has_invalid_utf8(),
+            "\\xED\\xA0\\x80 (surrogate U+D800) must be invalid UTF-8"
+        );
         assert!(f.lossy);
     }
 
@@ -442,7 +562,10 @@ mod encoding_hazards {
     fn inspect_above_unicode_max_f4_90_80_80() {
         // 0xF4 0x90 0x80 0x80 — above U+10FFFF (maximum Unicode codepoint)
         let f = inspect(b"\xF4\x90\x80\x80".as_ref());
-        assert!(f.has_invalid_utf8(), "\\xF4\\x90\\x80\\x80 (above U+10FFFF) must be invalid UTF-8");
+        assert!(
+            f.has_invalid_utf8(),
+            "\\xF4\\x90\\x80\\x80 (above U+10FFFF) must be invalid UTF-8"
+        );
         assert!(f.lossy);
     }
 
@@ -450,7 +573,10 @@ mod encoding_hazards {
     fn inspect_ff_fe_bom_like() {
         // 0xFF 0xFE — UTF-16 BOM bytes, invalid UTF-8
         let f = inspect(b"\xFF\xFE".as_ref());
-        assert!(f.has_invalid_utf8(), "\\xFF\\xFE (BOM-like) must be invalid UTF-8");
+        assert!(
+            f.has_invalid_utf8(),
+            "\\xFF\\xFE (BOM-like) must be invalid UTF-8"
+        );
         assert!(f.lossy);
     }
 
@@ -458,7 +584,10 @@ mod encoding_hazards {
     fn inspect_isolated_continuation_byte() {
         // 0x80 — continuation byte without a lead byte
         let f = inspect(b"\x80".as_ref());
-        assert!(f.has_invalid_utf8(), "isolated continuation byte must be invalid UTF-8");
+        assert!(
+            f.has_invalid_utf8(),
+            "isolated continuation byte must be invalid UTF-8"
+        );
         assert!(f.lossy);
     }
 
@@ -468,10 +597,16 @@ mod encoding_hazards {
         let cases = ["hello", "許功蓋", "Ünïcödé", "日本語", "\u{1F600}"];
         for s in cases {
             let f = inspect(s);
-            assert!(!f.has_invalid_utf8(),
-                "valid UTF-8 string {:?} must not be flagged as invalid", s);
-            assert!(!f.lossy,
-                "valid UTF-8 string {:?} must not set lossy=true", s);
+            assert!(
+                !f.has_invalid_utf8(),
+                "valid UTF-8 string {:?} must not be flagged as invalid",
+                s
+            );
+            assert!(
+                !f.lossy,
+                "valid UTF-8 string {:?} must not set lossy=true",
+                s
+            );
         }
     }
 }

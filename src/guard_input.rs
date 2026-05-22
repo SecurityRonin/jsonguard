@@ -21,7 +21,9 @@ impl GuardInput for &str {
     fn as_utf8_lossy(&self) -> (String, bool) {
         (String::from(*self), false)
     }
-    fn raw_bytes(&self) -> Option<&[u8]> { None }
+    fn raw_bytes(&self) -> Option<&[u8]> {
+        None
+    }
 }
 
 #[cfg(feature = "alloc")]
@@ -32,7 +34,9 @@ impl GuardInput for &[u8] {
         let lossy = matches!(cow, Cow::Owned(_));
         (cow.into_owned(), lossy)
     }
-    fn raw_bytes(&self) -> Option<&[u8]> { Some(*self) }
+    fn raw_bytes(&self) -> Option<&[u8]> {
+        Some(*self)
+    }
 }
 
 // Allows callers to pass `&my_string` where `my_string: String` directly.
@@ -41,7 +45,9 @@ impl GuardInput for &alloc::string::String {
     fn as_utf8_lossy(&self) -> (String, bool) {
         ((*self).clone(), false)
     }
-    fn raw_bytes(&self) -> Option<&[u8]> { None }
+    fn raw_bytes(&self) -> Option<&[u8]> {
+        None
+    }
 }
 
 // Allows callers to pass `b"literal"` (which has type `&[u8; N]`) directly.
@@ -53,13 +59,15 @@ impl<const N: usize> GuardInput for &[u8; N] {
         let lossy = matches!(cow, Cow::Owned(_));
         (cow.into_owned(), lossy)
     }
-    fn raw_bytes(&self) -> Option<&[u8]> { Some(*self) }
+    fn raw_bytes(&self) -> Option<&[u8]> {
+        Some(*self)
+    }
 }
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
-    use std::prelude::v1::*;
     use super::*;
+    use std::prelude::v1::*;
 
     #[test]
     fn str_input_not_lossy() {
