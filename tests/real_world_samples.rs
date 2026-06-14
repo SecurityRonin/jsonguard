@@ -25,9 +25,9 @@ mod bidi_corpus {
             .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
             .filter(|l| {
                 // Data line first field: space-separated hex codepoints
-                l.split(';').next().map_or(false, |cps| {
+                l.split(';').next().is_some_and(|cps| {
                     cps.split_whitespace()
-                        .any(|cp| u32::from_str_radix(cp, 16).map_or(false, |n| n == 0x202E))
+                        .any(|cp| u32::from_str_radix(cp, 16) == Ok(0x202E))
                 })
             })
             .take(n)
@@ -72,18 +72,15 @@ mod bidi_corpus {
             let f = inspect(line.as_str());
             assert!(
                 f.has_bidi(),
-                "expected has_bidi() for corpus line containing U+202E: {:?}",
-                line
+                "expected has_bidi() for corpus line containing U+202E: {line:?}"
             );
             assert!(
                 !f.is_csv_safe(),
-                "bidi-containing line must not be csv_safe: {:?}",
-                line
+                "bidi-containing line must not be csv_safe: {line:?}"
             );
             assert!(
                 !f.is_display_safe(),
-                "bidi-containing line must not be display_safe: {:?}",
-                line
+                "bidi-containing line must not be display_safe: {line:?}"
             );
         }
     }
@@ -95,8 +92,7 @@ mod bidi_corpus {
             // U+202E must not appear in sanitized output
             assert!(
                 !g.to_string().contains('\u{202E}'),
-                "display_safe must strip U+202E from: {:?}",
-                line
+                "display_safe must strip U+202E from: {line:?}"
             );
         }
     }
@@ -108,8 +104,7 @@ mod bidi_corpus {
             let out = g.to_string();
             assert!(
                 !out.contains('\u{202E}'),
-                "csv_field must strip U+202E from: {:?}",
-                line
+                "csv_field must strip U+202E from: {line:?}"
             );
         }
     }
@@ -165,8 +160,7 @@ mod bidi_corpus {
         for line in &attack_lines {
             assert!(
                 inspect(*line).has_bidi(),
-                "inspect must flag bidi in: {:?}",
-                line
+                "inspect must flag bidi in: {line:?}"
             );
         }
     }
@@ -208,7 +202,7 @@ mod formula_injection_corpus {
     // so we test it separately.
     fn formula_lines() -> impl Iterator<Item = &'static str> {
         FORMULA_CSV.lines().filter(|l| {
-            !l.trim().is_empty() && l.starts_with(|c| matches!(c, '=' | '+' | '-' | '@'))
+            !l.trim().is_empty() && l.starts_with(['=', '+', '-', '@'])
         })
     }
 
@@ -599,13 +593,11 @@ mod encoding_hazards {
             let f = inspect(s);
             assert!(
                 !f.has_invalid_utf8(),
-                "valid UTF-8 string {:?} must not be flagged as invalid",
-                s
+                "valid UTF-8 string {s:?} must not be flagged as invalid"
             );
             assert!(
                 !f.lossy,
-                "valid UTF-8 string {:?} must not set lossy=true",
-                s
+                "valid UTF-8 string {s:?} must not set lossy=true"
             );
         }
     }

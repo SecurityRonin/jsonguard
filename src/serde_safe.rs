@@ -38,8 +38,16 @@ pub struct JsonSafe<'a>(pub &'a str);
 
 impl Serialize for JsonSafe<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // STUB (RED): passthrough — does not yet neutralize anything.
-        serializer.serialize_str(self.0)
+        // Fast path: nothing unsafe → serialize the borrow with no allocation.
+        if !self.0.chars().any(is_json_display_unsafe) {
+            return serializer.serialize_str(self.0);
+        }
+        let cleaned: String = self
+            .0
+            .chars()
+            .map(|c| if is_json_display_unsafe(c) { '\u{FFFD}' } else { c })
+            .collect();
+        serializer.serialize_str(&cleaned)
     }
 }
 
