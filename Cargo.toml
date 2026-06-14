@@ -20,12 +20,15 @@ alloc = []           # Cow<'_, str> / String return types
 std = ["alloc"]      # std::error::Error impl, future Write impls
 nosql = ["alloc"]    # MongoDB, Elasticsearch, Redis helpers
 binary = ["alloc"]   # BSON, MessagePack, Protocol Buffers advisories
+serde = ["dep:serde", "alloc"] # JsonSafe<'_>: serde-serializable safe JSON string
 full = ["std", "nosql", "binary"]
 
 [dependencies]
+serde = { version = "1", optional = true, default-features = false }
 
 [dev-dependencies]
 proptest = "1"
+serde_json = "1"
 
 [[test]]
 name = "real_world_samples"

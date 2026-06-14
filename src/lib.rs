@@ -10,6 +10,8 @@ extern crate std;
 mod guard_input;
 #[cfg(feature = "alloc")]
 mod inspect;
+#[cfg(feature = "serde")]
+mod serde_safe;
 mod text;
 mod types;
 
@@ -23,3 +25,5 @@ pub use text::{
 };
 #[cfg(feature = "alloc")]
 pub use types::{DecodedStr, Findings, Guarded, Violation, ViolationKind};
+#[cfg(feature = "serde")]
+pub use serde_safe::JsonSafe;
