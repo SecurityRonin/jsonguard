@@ -1,7 +1,7 @@
 # jsonguard
 
 [![Crates.io](https://img.shields.io/crates/v/jsonguard.svg)](https://crates.io/crates/jsonguard)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/SecurityRonin/jsonguard/actions/workflows/ci.yml/badge.svg)](https://github.com/SecurityRonin/jsonguard/actions/workflows/ci.yml)
 [![Sponsor](https://img.shields.io/badge/sponsor-h4x0r-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/h4x0r)
 
