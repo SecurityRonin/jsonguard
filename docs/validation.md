@@ -19,7 +19,7 @@ Each attack class is validated in two independent ways:
 
 Both must hold for a claim to pass. A sanitizer that strips without detection (or detects without sanitizing) is flagged as a gap.
 
-Integration tests are in [`tests/real_world_samples.rs`](../tests/real_world_samples.rs). Corpus files are embedded at compile time via `include_str!` / `include_bytes!` and committed to the repository so CI never fetches them at test time.
+Integration tests are in [`tests/real_world_samples.rs`](https://github.com/SecurityRonin/jsonguard/blob/main/tests/real_world_samples.rs). Corpus files are embedded at compile time via `include_str!` / `include_bytes!` and committed to the repository so CI never fetches them at test time.
 
 ---
 
