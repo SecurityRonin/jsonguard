@@ -45,7 +45,13 @@ impl Serialize for JsonSafe<'_> {
         let cleaned: String = self
             .0
             .chars()
-            .map(|c| if is_json_display_unsafe(c) { '\u{FFFD}' } else { c })
+            .map(|c| {
+                if is_json_display_unsafe(c) {
+                    '\u{FFFD}'
+                } else {
+                    c
+                }
+            })
             .collect();
         serializer.serialize_str(&cleaned)
     }
@@ -66,12 +72,22 @@ mod tests {
     fn bidi_override_is_neutralized_to_replacement_char() {
         // U+202E RIGHT-TO-LEFT OVERRIDE in an EPROCESS ImageFileName.
         let j = serde_json::to_string(&JsonSafe("ev\u{202e}il.exe")).unwrap();
-        assert!(!j.contains('\u{202e}'), "bidi override must not survive: {j}");
-        assert!(j.contains('\u{FFFD}'), "scrubbed char marked with U+FFFD: {j}");
+        assert!(
+            !j.contains('\u{202e}'),
+            "bidi override must not survive: {j}"
+        );
+        assert!(
+            j.contains('\u{FFFD}'),
+            "scrubbed char marked with U+FFFD: {j}"
+        );
         // The output is still parseable JSON with exactly one marker.
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert_eq!(
-            v.as_str().unwrap().chars().filter(|&c| c == '\u{FFFD}').count(),
+            v.as_str()
+                .unwrap()
+                .chars()
+                .filter(|&c| c == '\u{FFFD}')
+                .count(),
             1
         );
     }

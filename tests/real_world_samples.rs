@@ -201,9 +201,9 @@ mod formula_injection_corpus {
     // application-level attack that bypasses spreadsheet formula guards,
     // so we test it separately.
     fn formula_lines() -> impl Iterator<Item = &'static str> {
-        FORMULA_CSV.lines().filter(|l| {
-            !l.trim().is_empty() && l.starts_with(['=', '+', '-', '@'])
-        })
+        FORMULA_CSV
+            .lines()
+            .filter(|l| !l.trim().is_empty() && l.starts_with(['=', '+', '-', '@']))
     }
 
     #[test]
@@ -595,10 +595,7 @@ mod encoding_hazards {
                 !f.has_invalid_utf8(),
                 "valid UTF-8 string {s:?} must not be flagged as invalid"
             );
-            assert!(
-                !f.lossy,
-                "valid UTF-8 string {s:?} must not set lossy=true"
-            );
+            assert!(!f.lossy, "valid UTF-8 string {s:?} must not set lossy=true");
         }
     }
 }
