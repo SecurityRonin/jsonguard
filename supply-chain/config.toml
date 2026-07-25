@@ -17,7 +17,7 @@ url = "https://raw.githubusercontent.com/google/rust-crate-audits/main/audits.to
 url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 
 [policy.jsonguard]
-audit-as-crates-io = true
+audit-as-crates-io = false
 
 [[exemptions.anyhow]]
 version = "1.0.102"
@@ -62,10 +62,6 @@ criteria = "safe-to-run"
 [[exemptions.itoa]]
 version = "1.0.18"
 criteria = "safe-to-run"
-
-[[exemptions.jsonguard]]
-version = "0.2.3"
-criteria = "safe-to-deploy"
 
 [[exemptions.libc]]
 version = "0.2.186"
