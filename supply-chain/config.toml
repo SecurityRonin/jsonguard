@@ -20,7 +20,7 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 audit-as-crates-io = false
 
 [[exemptions.anyhow]]
-version = "1.0.102"
+version = "1.0.104"
 criteria = "safe-to-run"
 
 [[exemptions.autocfg]]
