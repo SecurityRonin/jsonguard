@@ -272,7 +272,7 @@ mod tests {
         // formula at 0, bidi at 6 ("=hello" is 6 bytes)
         let offsets: Vec<usize> = f.violations.iter().map(|v| v.byte_offset).collect();
         let mut sorted = offsets.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         assert_eq!(offsets, sorted);
     }
 

@@ -83,10 +83,10 @@ impl Findings {
 
     pub fn is_csv_safe(&self) -> bool {
         !self.violations.iter().any(|v| match &v.kind {
-            ViolationKind::FormulaInjection => true,
-            ViolationKind::BidiOverride => true,
-            ViolationKind::InvalidUtf8 => true,
-            ViolationKind::ControlChar => !matches!(v.char, Some('\n') | Some('\r')),
+            ViolationKind::FormulaInjection
+            | ViolationKind::BidiOverride
+            | ViolationKind::InvalidUtf8 => true,
+            ViolationKind::ControlChar => !matches!(v.char, Some('\n' | '\r')),
         })
     }
 

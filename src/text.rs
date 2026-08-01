@@ -171,6 +171,14 @@ pub fn csv_field<I: GuardInput>(input: I) -> Guarded {
     Guarded { value, lossy }
 }
 
+/// Append the JSON `\uXXXX` escape for `c`. Writing to a `String` is infallible;
+/// the `Result` exists only to satisfy the `fmt::Write` signature.
+#[cfg(feature = "alloc")]
+fn write_unicode_escape(out: &mut String, c: char) {
+    use core::fmt::Write as _;
+    let _ = write!(out, "\\u{:04x}", c as u32);
+}
+
 #[cfg(feature = "alloc")]
 pub fn jsonl_safe<I: GuardInput>(input: I) -> Guarded {
     let (text, lossy) = input.as_utf8_lossy();
@@ -185,15 +193,13 @@ pub fn jsonl_safe<I: GuardInput>(input: I) -> Guarded {
             '\n' => out.push_str("\\n"),
             '\x0C' => out.push_str("\\f"),
             '\r' => out.push_str("\\r"),
-            '\u{0000}'..='\u{0007}' | '\u{000B}' | '\u{000E}'..='\u{001F}' => {
-                out.push_str(&alloc::format!("\\u{:04x}", c as u32));
-            }
-            '\u{007F}'..='\u{009F}' => {
-                out.push_str(&alloc::format!("\\u{:04x}", c as u32));
-            }
-            c if is_bidi(c) => {
-                out.push_str(&alloc::format!("\\u{:04x}", c as u32));
-            }
+            // C0 controls, DEL/C1 controls, and bidi overrides all take the same
+            // \uXXXX form; one arm keeps the escape set in a single place.
+            '\u{0000}'..='\u{0007}'
+            | '\u{000B}'
+            | '\u{000E}'..='\u{001F}'
+            | '\u{007F}'..='\u{009F}' => write_unicode_escape(&mut out, c),
+            c if is_bidi(c) => write_unicode_escape(&mut out, c),
             c => out.push(c),
         }
     }
@@ -683,7 +689,7 @@ mod tests {
 
     #[test]
     fn jsonl_safe_escapes_backslash() {
-        let g = jsonl_safe(r#"C:\Users\foo"#);
+        let g = jsonl_safe(r"C:\Users\foo");
         assert_eq!(g.to_string(), r#""C:\\Users\\foo""#);
     }
 

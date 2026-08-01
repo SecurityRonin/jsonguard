@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 // Integration tests against real-world attack samples and authoritative test data.
 // Sources:
 //   Unicode Consortium BidiCharacterTest.txt / BidiTest.txt (UCD 17.0.0)
