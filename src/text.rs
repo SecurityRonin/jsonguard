@@ -307,6 +307,47 @@ mod tests {
         assert_eq!(g.to_string(), "'@SUM");
     }
 
+    /// The formula guard must key on the first character the consuming
+    /// spreadsheet will not discard, not on the literal first character.
+    /// Leading whitespace — space, tab, CR, LF — is discarded on import, so
+    /// `\r=1+1` presents `=1+1` to the formula parser. OWASP's CSV-injection
+    /// guidance lists 0x09 and 0x0D as lead-ins for exactly this reason.
+    fn first_significant(s: &str) -> Option<char> {
+        s.trim_start_matches('"')
+            .chars()
+            .find(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
+    }
+
+    #[test]
+    fn tsv_safe_guards_formula_behind_leading_whitespace() {
+        for pad in ["\r", "\n", "\t", " ", "\r\n", "  "] {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let g = tsv_safe(s.as_str());
+                assert_ne!(
+                    first_significant(&g.to_string()),
+                    Some(lead),
+                    "tsv_safe left {lead:?} reachable behind {pad:?}: {g}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn csv_field_guards_formula_behind_leading_whitespace() {
+        for pad in ["\r", "\n", "\t", " ", "\r\n", "  "] {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let g = csv_field(s.as_str());
+                assert_ne!(
+                    first_significant(&g.to_string()),
+                    Some(lead),
+                    "csv_field left {lead:?} reachable behind {pad:?}: {g}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn tsv_safe_no_formula_guard_midstring() {
         let g = tsv_safe("value=something");

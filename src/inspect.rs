@@ -283,6 +283,27 @@ mod tests {
         assert!(!inspect("a\x01b").is_csv_safe());
     }
 
+    /// A formula lead-in hidden behind discardable leading whitespace must be
+    /// reported, or `is_csv_safe()` hands the caller a false clean verdict on a
+    /// value that will execute on import.
+    #[test]
+    fn inspect_flags_formula_behind_leading_whitespace() {
+        for pad in ["\r", "\n", "\t", " ", "\r\n", "  "] {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let f = inspect(s.as_str());
+                assert!(
+                    f.has_formula(),
+                    "inspect missed {lead:?} behind {pad:?} in {s:?}"
+                );
+                assert!(
+                    !f.is_csv_safe(),
+                    "is_csv_safe passed {lead:?} behind {pad:?} in {s:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn inspect_tsv_vs_csv_newline() {
         // \n is CSV-safe but not TSV-safe
