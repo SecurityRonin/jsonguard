@@ -365,6 +365,119 @@ mod tests {
         }
     }
 
+    /// Lead-ins that survive the display filter but are not ASCII whitespace.
+    ///
+    /// Split by the property that decides them: the first group carries
+    /// Unicode `White_Space`, the second is General_Category `Cf` (invisible
+    /// format characters). A `{space, tab, CR, LF}` set misses both groups.
+    const UNICODE_SPACE_PADS: &[&str] = &[
+        "\u{00A0}", // NO-BREAK SPACE
+        "\u{1680}", // OGHAM SPACE MARK
+        "\u{2000}", // EN QUAD
+        "\u{2003}", // EM SPACE
+        "\u{2028}", // LINE SEPARATOR
+        "\u{2029}", // PARAGRAPH SEPARATOR
+        "\u{202F}", // NARROW NO-BREAK SPACE
+        "\u{205F}", // MEDIUM MATHEMATICAL SPACE
+        "\u{3000}", // IDEOGRAPHIC SPACE
+    ];
+
+    const INVISIBLE_FORMAT_PADS: &[&str] = &[
+        "\u{00AD}",  // SOFT HYPHEN
+        "\u{180E}",  // MONGOLIAN VOWEL SEPARATOR
+        "\u{200B}",  // ZERO WIDTH SPACE
+        "\u{200C}",  // ZERO WIDTH NON-JOINER
+        "\u{200D}",  // ZERO WIDTH JOINER
+        "\u{2060}",  // WORD JOINER
+        "\u{FEFF}",  // ZERO WIDTH NO-BREAK SPACE (BOM)
+        "\u{E0020}", // TAG SPACE
+    ];
+
+    /// The guard fired iff an apostrophe leads the emitted cell. Asserting on
+    /// the apostrophe rather than re-deriving "first significant character"
+    /// keeps the test from sharing the production skip-set it is checking.
+    fn is_guarded(emitted: &str) -> bool {
+        emitted.trim_start_matches('"').starts_with('\'')
+    }
+
+    #[test]
+    fn csv_field_guards_formula_behind_unicode_whitespace() {
+        for pad in UNICODE_SPACE_PADS {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let g = csv_field(s.as_str()).to_string();
+                assert!(
+                    is_guarded(&g),
+                    "csv_field left {lead:?} unguarded behind {pad:?}: {g:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn csv_field_guards_formula_behind_invisible_format_chars() {
+        for pad in INVISIBLE_FORMAT_PADS {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let g = csv_field(s.as_str()).to_string();
+                assert!(
+                    is_guarded(&g),
+                    "csv_field left {lead:?} unguarded behind {pad:?}: {g:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tsv_safe_guards_formula_behind_unicode_whitespace() {
+        for pad in UNICODE_SPACE_PADS {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let g = tsv_safe(s.as_str()).to_string();
+                assert!(
+                    is_guarded(&g),
+                    "tsv_safe left {lead:?} unguarded behind {pad:?}: {g:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tsv_safe_guards_formula_behind_invisible_format_chars() {
+        for pad in INVISIBLE_FORMAT_PADS {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let g = tsv_safe(s.as_str()).to_string();
+                assert!(
+                    is_guarded(&g),
+                    "tsv_safe left {lead:?} unguarded behind {pad:?}: {g:?}"
+                );
+            }
+        }
+    }
+
+    /// Counter-case: the tab lead-in works today only because the tab is
+    /// stripped before the char-0 check. Widening the skip set must not
+    /// regress it into an unguarded cell.
+    #[test]
+    fn csv_field_still_guards_tab_lead_in() {
+        assert_eq!(csv_field("\t=cmd").to_string(), "'=cmd");
+        assert_eq!(csv_field(" =cmd").to_string(), "' =cmd");
+        assert_eq!(csv_field("\u{00A0}=cmd").to_string(), "'\u{00A0}=cmd");
+    }
+
+    /// A visible leading character still ends the lead-in scan, so the guard
+    /// stays off for values that never reach a formula parser.
+    #[test]
+    fn csv_field_visible_lead_in_is_not_guarded() {
+        assert_eq!(csv_field("x\u{00A0}=1+1").to_string(), "x\u{00A0}=1+1");
+        assert_eq!(csv_field("\u{00A0}value").to_string(), "\u{00A0}value");
+        assert_eq!(
+            csv_field("\u{200B}\u{00A0}").to_string(),
+            "\u{200B}\u{00A0}"
+        );
+    }
+
     #[test]
     fn tsv_safe_no_formula_guard_midstring() {
         let g = tsv_safe("value=something");
