@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/SecurityRonin/jsonguard/compare/jsonguard-v0.2.4...jsonguard-v0.2.5) - 2026-08-02
+
+### Fixed
+
+- key the formula guard on the first visible character ([#5](https://github.com/SecurityRonin/jsonguard/pull/5))
+
+### Other
+
+- bump anyhow to 1.0.104 (RUSTSEC-2026-0190) ([#3](https://github.com/SecurityRonin/jsonguard/pull/3))
+
 ## [0.2.4](https://github.com/SecurityRonin/jsonguard/compare/jsonguard-v0.2.3...jsonguard-v0.2.4) - 2026-07-25
 
 ### Documentation
