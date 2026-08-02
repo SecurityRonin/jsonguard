@@ -57,14 +57,63 @@ pub fn cap_display<I: GuardInput>(input: I, max_chars: usize) -> Guarded {
     Guarded { value, lossy }
 }
 
-/// A spreadsheet discards leading whitespace before parsing a cell, so the
-/// character that reaches the formula parser is the first *non-discardable*
-/// one — not necessarily the first character. OWASP's CSV-injection guidance
-/// lists 0x09 (tab) and 0x0D (CR) as formula lead-ins for exactly this reason.
+/// General_Category `Cf` — the invisible format characters.
+///
+/// Enumerated from the UCD `DerivedGeneralCategory.txt` dated 2025-07-24
+/// (170 code points, 21 ranges). `core` exposes no general-category query, so
+/// the table is inlined; it is the whole category rather than a hand-picked
+/// subset, so a newly-encountered format character needs no code change here.
+///
+/// Overlaps `is_display_unsafe`'s bidi controls by design: `csv_field` and
+/// `tsv_safe` strip those before the guard runs, but `inspect` scans the raw
+/// decoded text, where a bidi control can still stand in front of a lead-in.
+#[cfg(feature = "alloc")]
+const fn is_format_char(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}'
+        | '\u{0600}'..='\u{0605}'
+        | '\u{061C}'
+        | '\u{06DD}'
+        | '\u{070F}'
+        | '\u{0890}'..='\u{0891}'
+        | '\u{08E2}'
+        | '\u{180E}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{110BD}'
+        | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0001}'
+        | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
+/// A character that stands in front of a cell's value without becoming part of
+/// it — so the character that reaches the formula parser is the first one this
+/// returns `false` for, not the literal first character.
+///
+/// Two properties, one rule: a spreadsheet discards leading whitespace before
+/// parsing (OWASP's CSV-injection guidance lists 0x09 and 0x0D as lead-ins for
+/// exactly this reason), and a format character renders to nothing, so a
+/// reviewer eyeballing the row sees the lead-in flush against the margin
+/// either way. ASCII `{space, tab, CR, LF}` is neither property's whole set:
+/// `char::is_whitespace` carries Unicode `White_Space`, which includes U+00A0
+/// and U+3000, and `Cf` carries U+200B and U+FEFF, which are not whitespace.
+#[cfg(feature = "alloc")]
+pub(crate) fn is_lead_in_skippable(c: char) -> bool {
+    c.is_whitespace() || is_format_char(c)
+}
+
 #[cfg(feature = "alloc")]
 fn leads_with_formula(s: &str) -> bool {
     matches!(
-        s.chars().find(|c| !matches!(c, ' ' | '\t' | '\r' | '\n')),
+        s.chars().find(|c| !is_lead_in_skippable(*c)),
         Some('=' | '+' | '-' | '@')
     )
 }

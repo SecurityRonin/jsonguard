@@ -1,6 +1,8 @@
 #[cfg(feature = "alloc")]
 use crate::guard_input::GuardInput;
 #[cfg(feature = "alloc")]
+use crate::text::is_lead_in_skippable;
+#[cfg(feature = "alloc")]
 use crate::types::{Findings, Violation, ViolationKind};
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -60,7 +62,7 @@ pub fn inspect<I: GuardInput>(input: I) -> Findings {
     let mut lead_in_pending = true;
 
     for ch in text.chars() {
-        if lead_in_pending && !matches!(ch, ' ' | '\t' | '\r' | '\n') {
+        if lead_in_pending && !is_lead_in_skippable(ch) {
             lead_in_pending = false;
             if matches!(ch, '=' | '+' | '-' | '@') {
                 violations.push(Violation {
