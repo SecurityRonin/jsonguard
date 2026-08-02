@@ -1,6 +1,8 @@
 #[cfg(feature = "alloc")]
 use crate::guard_input::GuardInput;
 #[cfg(feature = "alloc")]
+use crate::text::is_lead_in_skippable;
+#[cfg(feature = "alloc")]
 use crate::types::{Findings, Violation, ViolationKind};
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -53,11 +55,15 @@ pub fn inspect<I: GuardInput>(input: I) -> Findings {
     // Scan decoded text for FormulaInjection, BidiOverride, ControlChar.
     // byte_offset here is in the decoded string's coordinate space.
     let mut byte_offset: usize = 0;
-    let mut first_char = true;
+    // A spreadsheet discards leading whitespace before parsing a cell, so the
+    // character that reaches the formula parser is the first *non-discardable*
+    // one — not necessarily the first character. Detecting it in this loop
+    // (rather than in a pre-pass) keeps `violations` ordered by byte offset.
+    let mut lead_in_pending = true;
 
     for ch in text.chars() {
-        if first_char {
-            first_char = false;
+        if lead_in_pending && !is_lead_in_skippable(ch) {
+            lead_in_pending = false;
             if matches!(ch, '=' | '+' | '-' | '@') {
                 violations.push(Violation {
                     kind: ViolationKind::FormulaInjection,
@@ -283,6 +289,27 @@ mod tests {
         assert!(!inspect("a\x01b").is_csv_safe());
     }
 
+    /// A formula lead-in hidden behind discardable leading whitespace must be
+    /// reported, or `is_csv_safe()` hands the caller a false clean verdict on a
+    /// value that will execute on import.
+    #[test]
+    fn inspect_flags_formula_behind_leading_whitespace() {
+        for pad in ["\r", "\n", "\t", " ", "\r\n", "  "] {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let f = inspect(s.as_str());
+                assert!(
+                    f.has_formula(),
+                    "inspect missed {lead:?} behind {pad:?} in {s:?}"
+                );
+                assert!(
+                    !f.is_csv_safe(),
+                    "is_csv_safe passed {lead:?} behind {pad:?} in {s:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn inspect_tsv_vs_csv_newline() {
         // \n is CSV-safe but not TSV-safe
@@ -316,5 +343,73 @@ mod tests {
         let f = inspect(b"\xB3\x5C".as_ref());
         assert!(f.has_invalid_utf8());
         assert!(f.lossy);
+    }
+
+    /// `is_csv_safe()` is the verdict a caller trusts before emitting a value
+    /// raw. A lead-in that survives the control-character filter must not buy
+    /// a clean verdict — Unicode `White_Space` and General_Category `Cf` both
+    /// sit outside a `{space, tab, CR, LF}` set.
+    #[test]
+    fn inspect_detects_formula_behind_unicode_whitespace() {
+        for pad in [
+            "\u{00A0}", // NO-BREAK SPACE
+            "\u{1680}", // OGHAM SPACE MARK
+            "\u{2000}", // EN QUAD
+            "\u{2003}", // EM SPACE
+            "\u{2028}", // LINE SEPARATOR
+            "\u{2029}", // PARAGRAPH SEPARATOR
+            "\u{202F}", // NARROW NO-BREAK SPACE
+            "\u{205F}", // MEDIUM MATHEMATICAL SPACE
+            "\u{3000}", // IDEOGRAPHIC SPACE
+        ] {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let f = inspect(s.as_str());
+                assert!(
+                    f.has_formula(),
+                    "inspect missed {lead:?} behind {pad:?} in {s:?}"
+                );
+                assert!(!f.is_csv_safe(), "inspect called {s:?} CSV-safe");
+            }
+        }
+    }
+
+    #[test]
+    fn inspect_detects_formula_behind_invisible_format_chars() {
+        for pad in [
+            "\u{00AD}",  // SOFT HYPHEN
+            "\u{180E}",  // MONGOLIAN VOWEL SEPARATOR
+            "\u{200B}",  // ZERO WIDTH SPACE
+            "\u{200C}",  // ZERO WIDTH NON-JOINER
+            "\u{200D}",  // ZERO WIDTH JOINER
+            "\u{2060}",  // WORD JOINER
+            "\u{FEFF}",  // ZERO WIDTH NO-BREAK SPACE (BOM)
+            "\u{E0020}", // TAG SPACE
+        ] {
+            for lead in ['=', '+', '-', '@'] {
+                let s = alloc::format!("{pad}{lead}1+1");
+                let f = inspect(s.as_str());
+                assert!(
+                    f.has_formula(),
+                    "inspect missed {lead:?} behind {pad:?} in {s:?}"
+                );
+                assert!(!f.is_csv_safe(), "inspect called {s:?} CSV-safe");
+            }
+        }
+    }
+
+    /// The lead-in scan still ends at the first visible character, and the
+    /// reported offset is the lead-in's own, not the pad's.
+    #[test]
+    fn inspect_visible_lead_in_ends_the_scan() {
+        assert!(!inspect("x\u{00A0}=1+1").has_formula());
+        let f = inspect("\u{00A0}=1+1");
+        let v = f
+            .violations
+            .iter()
+            .find(|v| v.kind == ViolationKind::FormulaInjection)
+            .expect("formula violation");
+        assert_eq!(v.char, Some('='));
+        assert_eq!(v.byte_offset, "\u{00A0}".len());
     }
 }
