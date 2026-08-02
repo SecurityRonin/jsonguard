@@ -53,11 +53,15 @@ pub fn inspect<I: GuardInput>(input: I) -> Findings {
     // Scan decoded text for FormulaInjection, BidiOverride, ControlChar.
     // byte_offset here is in the decoded string's coordinate space.
     let mut byte_offset: usize = 0;
-    let mut first_char = true;
+    // A spreadsheet discards leading whitespace before parsing a cell, so the
+    // character that reaches the formula parser is the first *non-discardable*
+    // one — not necessarily the first character. Detecting it in this loop
+    // (rather than in a pre-pass) keeps `violations` ordered by byte offset.
+    let mut lead_in_pending = true;
 
     for ch in text.chars() {
-        if first_char {
-            first_char = false;
+        if lead_in_pending && !matches!(ch, ' ' | '\t' | '\r' | '\n') {
+            lead_in_pending = false;
             if matches!(ch, '=' | '+' | '-' | '@') {
                 violations.push(Violation {
                     kind: ViolationKind::FormulaInjection,

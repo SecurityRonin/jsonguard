@@ -57,6 +57,27 @@ pub fn cap_display<I: GuardInput>(input: I, max_chars: usize) -> Guarded {
     Guarded { value, lossy }
 }
 
+/// A spreadsheet discards leading whitespace before parsing a cell, so the
+/// character that reaches the formula parser is the first *non-discardable*
+/// one — not necessarily the first character. OWASP's CSV-injection guidance
+/// lists 0x09 (tab) and 0x0D (CR) as formula lead-ins for exactly this reason.
+#[cfg(feature = "alloc")]
+fn leads_with_formula(s: &str) -> bool {
+    matches!(
+        s.chars().find(|c| !matches!(c, ' ' | '\t' | '\r' | '\n')),
+        Some('=' | '+' | '-' | '@')
+    )
+}
+
+#[cfg(feature = "alloc")]
+fn guard_formula(cleaned: String) -> String {
+    if leads_with_formula(&cleaned) {
+        alloc::format!("'{cleaned}")
+    } else {
+        cleaned
+    }
+}
+
 #[cfg(feature = "alloc")]
 pub fn tsv_safe<I: GuardInput>(input: I) -> Guarded {
     let (text, lossy) = input.as_utf8_lossy();
@@ -68,11 +89,10 @@ pub fn tsv_safe<I: GuardInput>(input: I) -> Guarded {
             c => Some(c),
         })
         .collect();
-    let value = match cleaned.chars().next() {
-        Some('=' | '+' | '-' | '@') => alloc::format!("'{cleaned}"),
-        _ => cleaned,
-    };
-    Guarded { value, lossy }
+    Guarded {
+        value: guard_formula(cleaned),
+        lossy,
+    }
 }
 
 fn needs_csv_quoting(s: &str) -> bool {
@@ -92,10 +112,7 @@ pub fn csv_field<I: GuardInput>(input: I) -> Guarded {
             !is_display_unsafe(c)
         })
         .collect();
-    let guarded = match cleaned.chars().next() {
-        Some('=' | '+' | '-' | '@') => alloc::format!("'{cleaned}"),
-        _ => cleaned,
-    };
+    let guarded = guard_formula(cleaned);
     let value = if needs_csv_quoting(&guarded) {
         let escaped = guarded.replace('"', "\"\"");
         alloc::format!("\"{escaped}\"")
