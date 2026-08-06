@@ -6,61 +6,21 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "0"
+permissions:
+  contents: read
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo test
-      - run: cargo test --no-default-features
-      - run: cargo test --features std
-      - run: cargo test --features full
-      - run: cargo clippy -- -D warnings
-      - run: cargo fmt --check
-
-  check-msrv:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: dtolnay/rust-toolchain@1.75
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo check
-      - run: cargo check --features full
-
-  deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@a402910a723481c4c80d006d75298c796a9c8695
-        with:
-          tool: cargo-deny
-      - run: cargo deny check
-
-  vet:
-    name: Cargo Vet (supply-chain)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - name: Install cargo-vet
-        uses: taiki-e/install-action@a402910a723481c4c80d006d75298c796a9c8695
-        with:
-          tool: cargo-vet
-      - name: Fetch dependencies
-        run: cargo fetch
-      - name: Check supply chain
-        run: cargo vet --locked
+  ci:
+    uses: SecurityRonin/fleet-ci/.github/workflows/rust-ci.yml@a62ab10603151071744cec0b4e3638aa6406d4e4
+    with:
+      # This repo had NO coverage job at all, so there is no existing decision
+      # to carry across — and inheriting the default strict gate blind would be
+      # a new, failing requirement rather than an adoption. The floor is the
+      # measured status quo: `cargo llvm-cov --workspace --all-features
+      # --summary-only` reports 97.90% line coverage (1093 lines, 23 missed)
+      # on this commit, so 97 is where the repo already stands.
+      # `floor` is a migration state, not the standard: an aggregate cannot
+      # honour a per-line `// cov:unreachable` exemption. Raising this toward
+      # strict is follow-up work, deliberately not bundled into adoption.
+      coverage-gate: floor
+      coverage-floor: 97
