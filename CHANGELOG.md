@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/SecurityRonin/jsonguard/compare/jsonguard-v0.2.5...jsonguard-v0.2.6) - 2026-08-06
+
+### Fixed
+
+- *(lints)* backtick General_Category so clippy -D warnings passes
+
+### Other
+
+- adopt the canonical lints block
+
 ## [0.2.5](https://github.com/SecurityRonin/jsonguard/compare/jsonguard-v0.2.4...jsonguard-v0.2.5) - 2026-08-02
 
 ### Fixed
