@@ -57,7 +57,7 @@ pub fn cap_display<I: GuardInput>(input: I, max_chars: usize) -> Guarded {
     Guarded { value, lossy }
 }
 
-/// General_Category `Cf` — the invisible format characters.
+/// `General_Category` `Cf` — the invisible format characters.
 ///
 /// Enumerated from the UCD `DerivedGeneralCategory.txt` dated 2025-07-24
 /// (170 code points, 21 ranges). `core` exposes no general-category query, so
