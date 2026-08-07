@@ -347,7 +347,7 @@ mod tests {
 
     /// `is_csv_safe()` is the verdict a caller trusts before emitting a value
     /// raw. A lead-in that survives the control-character filter must not buy
-    /// a clean verdict — Unicode `White_Space` and General_Category `Cf` both
+    /// a clean verdict — Unicode `White_Space` and `General_Category` `Cf` both
     /// sit outside a `{space, tab, CR, LF}` set.
     #[test]
     fn inspect_detects_formula_behind_unicode_whitespace() {
