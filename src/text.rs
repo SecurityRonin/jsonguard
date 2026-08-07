@@ -423,7 +423,7 @@ mod tests {
     /// Lead-ins that survive the display filter but are not ASCII whitespace.
     ///
     /// Split by the property that decides them: the first group carries
-    /// Unicode `White_Space`, the second is General_Category `Cf` (invisible
+    /// Unicode `White_Space`, the second is `General_Category` `Cf` (invisible
     /// format characters). A `{space, tab, CR, LF}` set misses both groups.
     const UNICODE_SPACE_PADS: &[&str] = &[
         "\u{00A0}", // NO-BREAK SPACE
